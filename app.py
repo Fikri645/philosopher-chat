@@ -1,3 +1,4 @@
+import re
 import time
 
 import gradio as gr
@@ -21,6 +22,45 @@ _PROVIDER_COLOR = {
 }
 
 _COMPARE_DEFAULT_B = "Llama 4 Scout 17B  [Groq]"
+
+_THINK_STYLE = (
+    "color:var(--body-text-color-subdued);font-size:0.88em;"
+    "border-left:3px solid var(--border-color-primary);padding-left:12px;margin:6px 0"
+)
+_SUMMARY_STYLE = (
+    "cursor:pointer;color:var(--body-text-color-subdued);"
+    "font-style:italic;user-select:none"
+)
+
+
+def _format_think_blocks(text: str) -> str:
+    """Render <think>…</think> as collapsible, muted sections.
+
+    Mid-stream (</think> not yet seen): open <details> showing live reasoning.
+    Complete block: closed <details> with 'click to expand' label.
+    """
+    if "<think>" not in text:
+        return text
+
+    if "</think>" not in text:
+        # Partial — think block still streaming
+        idx = text.index("<think>")
+        pre, thinking = text[:idx], text[idx + 7:]
+        return (
+            pre
+            + f'<details open><summary style="{_SUMMARY_STYLE}">🤔 Thinking…</summary>'
+            + f'<div style="{_THINK_STYLE}">{thinking}</div></details>'
+        )
+
+    def _wrap(m: re.Match) -> str:
+        content = m.group(1).strip()
+        return (
+            f'<details><summary style="{_SUMMARY_STYLE}">'
+            "🤔 Chain of thought (click to expand)</summary>"
+            f'<div style="{_THINK_STYLE}">{content}</div></details>\n\n'
+        )
+
+    return re.sub(r"<think>(.*?)</think>", _wrap, text, flags=re.DOTALL)
 
 
 def _score_bar(score: float, width: int = 10) -> str:
@@ -117,33 +157,39 @@ def respond_stream(message: str, history: list, philosopher: str, llm_label: str
     chunks_md = _format_retrieved_chunks(docs, scores)
 
     history = history + [
-        {"role": "user",      "content": message},
-        {"role": "assistant", "content": "▌"},  # typing cursor — keeps loading feel
+        {"role": "user", "content": message},
+        {
+            "role": "assistant",
+            "content": (
+                "<em style='color:var(--body-text-color-subdued)'>"
+                "⏳ Retrieving context and generating response…"
+                "</em>"
+            ),
+        },
     ]
-    # Show user bubble + cursor immediately, before LLM first token
+    # Show user bubble + loading message immediately
     yield history, "", gr.update(value=chunks_md), gr.update()
 
     provider, model_id = LLM_OPTIONS.get(llm_label, LLM_OPTIONS[DEFAULT_LLM])
     t1 = time.perf_counter()
-    is_first_chunk = True
+    full_response = ""
     try:
         for text_chunk in stream_llm(provider, model_id, context_str, message):
-            if is_first_chunk:
-                history[-1]["content"] = text_chunk  # replace cursor with real content
-                is_first_chunk = False
-            else:
-                history[-1]["content"] += text_chunk
+            full_response += text_chunk
+            history[-1]["content"] = _format_think_blocks(full_response)
             yield history, "", gr.update(value=chunks_md), gr.update()
 
         llm_time = time.perf_counter() - t1
         unique_sources = len({d.metadata.get("source") for d in docs})
         metrics_md = _format_metrics(retrieve_time, llm_time, len(docs), unique_sources)
 
-        history[-1]["content"] += _format_sources(docs, scores)
+        history[-1]["content"] = (
+            _format_think_blocks(full_response) + _format_sources(docs, scores)
+        )
         yield history, "", gr.update(value=chunks_md), gr.update(value=metrics_md)
 
     except Exception as exc:
-        history[-1]["content"] = f"⚠️ **Error:** {exc}"  # replaces cursor on error too
+        history[-1]["content"] = f"⚠️ **Error:** {exc}"
         yield history, "", gr.update(value=chunks_md), gr.update()
 
 
