@@ -33,7 +33,6 @@ LLM_OPTIONS: dict[str, tuple[str, str]] = {
     "Gemma 4 Dense 31B  [Google]":       ("google",      "gemma-4-31b-it"),         # 15 RPM | ∞ TPM | 1500 RPD
     "Gemini 3.1 Flash Lite  [Google]":   ("google",      "gemini-3.1-flash-lite"),  # 15 RPM | 250K TPM | 500 RPD
     "Gemini 3.5 Flash  [Google]":        ("google",      "gemini-3.5-flash"),       #  5 RPM | 250K TPM |  20 RPD
-    "Gemini 3 Flash  [Google]":          ("google",      "gemini-3-flash-preview"), #  5 RPM | 250K TPM |  20 RPD
     "Gemini 2.5 Flash  [Google]":        ("google",      "gemini-2.5-flash"),       #  5 RPM | 250K TPM |  20 RPD
     "Gemini 2.5 Flash Lite  [Google]":   ("google",      "gemini-2.5-flash-lite"),  # 10 RPM | 250K TPM |  20 RPD
     # ── Groq (free tier, very fast LPU inference) ─────────────────────────
