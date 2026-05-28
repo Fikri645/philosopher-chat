@@ -149,10 +149,12 @@ def respond_stream(message: str, history: list, philosopher: str, llm_label: str
         return
 
     # — Build retrieval query —
-    # For short follow-ups ("bahas lebih lanjut", "elaborate", etc.) that lack
-    # standalone meaning, prepend the last user message so retrieval has context.
+    # Always enrich with the previous user message when there is history.
+    # Follow-up questions ("bahas lebih lanjut", "how does this relate…") contain
+    # pronouns / references that are meaningless without context; even standalone
+    # questions benefit from the extra topic signal staying in the same thread.
     retrieval_query = message
-    if len(message.split()) <= 8 and history:
+    if history:
         last_user = next(
             (t["content"] for t in reversed(history) if t["role"] == "user"), ""
         )
