@@ -120,6 +120,8 @@ def respond_stream(message: str, history: list, philosopher: str, llm_label: str
         {"role": "user",      "content": message},
         {"role": "assistant", "content": ""},
     ]
+    # Yield immediately so the user bubble appears before the LLM starts
+    yield history, "", gr.update(value=chunks_md), gr.update()
 
     provider, model_id = LLM_OPTIONS.get(llm_label, LLM_OPTIONS[DEFAULT_LLM])
     t1 = time.perf_counter()
@@ -237,6 +239,13 @@ footer { display: none !important; }
 }
 .metric-bar p { font-size: 0.82rem; color: var(--body-text-color-subdued); margin: 4px 0; }
 .status-box textarea { font-size: 0.82rem !important; }
+
+/* Fix double scrollbar: prevent inner message wrappers from scrolling */
+.chatbot .overflow-y-auto { scrollbar-width: thin; scrollbar-color: var(--border-color-primary) transparent; }
+.chatbot .message-wrap { overflow: visible !important; }
+.chatbot .message-wrap > div { overflow: visible !important; max-height: none !important; }
+/* Prevent long markdown lines from adding a horizontal inner scroll */
+.chatbot .prose { overflow-x: hidden !important; overflow-wrap: break-word; word-break: break-word; }
 """
 
 with gr.Blocks(title="Philosopher Chat") as demo:

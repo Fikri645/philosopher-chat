@@ -292,10 +292,11 @@ def get_umap_data() -> dict | None:
         return None
 
     result = _get_vectorstore().get(include=["embeddings", "metadatas", "documents"])
-    if not result.get("embeddings"):
+    embeddings_raw = result.get("embeddings")
+    if embeddings_raw is None or len(embeddings_raw) == 0:
         return None
 
-    embeddings = np.array(result["embeddings"])
+    embeddings = np.array(embeddings_raw)
     reducer = umap_module.UMAP(
         n_components=2, random_state=42, n_neighbors=15, min_dist=0.1
     )
