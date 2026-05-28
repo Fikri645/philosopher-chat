@@ -5,6 +5,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Authenticate with HuggingFace Hub so gated models (e.g. EmbeddingGemma-300M) can be downloaded.
+# On HF Spaces, set HF_TOKEN in Settings → Variables and secrets.
+_HF_TOKEN = os.getenv("HF_TOKEN", "")
+if _HF_TOKEN:
+    from huggingface_hub import login as _hf_login
+    _hf_login(token=_HF_TOKEN, add_to_git_credential=False)
+
 PROJECT_ROOT = Path(__file__).parent
 DATA_DIR = PROJECT_ROOT / "data" / "texts"
 VECTORSTORE_DIR = PROJECT_ROOT / "vectorstore"
