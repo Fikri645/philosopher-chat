@@ -3,88 +3,93 @@
 Benchmarked on: *"What is Nietzsche's view on nihilism and the will to power?"*  
 Setup: RTX 3060, EmbeddingGemma-300M on CUDA, ChromaDB (~5,700 chunks), `RETRIEVAL_K=5`.
 
+Rate limits for Google verified directly from **aistudio.google.com/rate-limit** (May 2026).  
+Rate limits for Groq verified from **live API response headers** + console.groq.com/docs/rate-limits.  
+Rate limits for OpenRouter verified from **openrouter.ai/docs/guides/routing/model-variants/free**.
+
 ---
 
 ## Full Comparison Table
 
-| Model | Provider | Latency | Quality | RPM | TPM | RPD | TPD | Notes |
-|---|---|---|---|---|---|---|---|---|
-| **Gemini 2.5 Flash Lite** | Google | ~2 s | ★★★☆☆ | 15 | 250K | 1,000 | — | Fastest Google; concise answers |
-| **Gemini 2.5 Flash** | Google | ~7 s | ★★★★☆ | 10 | 250K | 250 | — | Best speed/quality balance |
-| **Gemini 2.5 Pro** | Google | fast* | ★★★★★ | 5 | 250K | 100 | — | Highest quality; very tight daily quota |
-| **Gemini 2.0 Flash** | Google | fast* | ★★★★☆ | 10 | 250K | 250 | — | Solid, same quota as 2.5 Flash |
-| **Gemma 4 MoE 26B** | Google | ~65 s | ★★★★☆ | — | — | — | — | Rate limits not published; deep analysis |
-| **Gemma 4 Dense 31B** | Google | ~25 s | ★★★★☆ | — | — | — | — | Rate limits not published; faster than MoE |
-| **Llama 3.1 8B** | Groq | ~2 s | ★★☆☆☆ | 14,400 | 6K | 14,400 | 500K | Lightest model; best for high-volume use |
-| **Llama 4 Scout 17B** | Groq | ~1.5 s | ★★★★☆ | 1,000 | 30K | 1,000 | 500K | Fastest quality model overall |
-| **Llama 3.3 70B** | Groq | ~4.5 s | ★★★★★ | 1,000 | 12K | 1,000 | 100K | Best Groq quality; tighter token quota |
-| **Qwen3 32B** | Groq | ~5 s | ★★★★★ | 1,000 | 6K | 1,000 | 500K | Chain-of-thought reasoning; deepest Groq |
-| **Nvidia Nemotron 120B** | OpenRouter | ~75 s | ★★★★★ | 20 | — | 50** | — | Exceptional depth; very slow on free tier |
-| **OpenAI OSS 120B** | OpenRouter | ~22 s | ★★★★★ | 20 | — | 50** | — | Best free OR option; high quality |
-| **DeepSeek V4 Flash** | OpenRouter | ~5 s* | ★★★★☆ | 20 | — | 50** | — | 1M context window; fast when not throttled |
-| **Llama 3.3 70B** | OpenRouter | ~4 s* | ★★★★★ | 20 | — | 50** | — | Same weights as Groq; use Groq for reliability |
-| **Qwen3 Next 80B** | OpenRouter | ~8 s* | ★★★★★ | 20 | — | 50** | — | Strong reasoning; frequently throttled |
-| **Gemma 4 MoE 26B** | OpenRouter | ~5 s* | ★★★★☆ | 20 | — | 50** | — | Same weights as Google version |
+| Model | Provider | Latency | RPM | TPM | RPD | Notes |
+|---|---|---|---|---|---|---|
+| **Gemma 4 MoE 26B** | Google | ~65 s | 15 | ∞ | **1,500** | Best limits of any Google model; slow but deep |
+| **Gemma 4 Dense 31B** | Google | ~25 s | 15 | ∞ | **1,500** | Same limits as MoE; faster, slightly less depth |
+| **Gemini 3.1 Flash Lite** | Google | ~0.6 s | 15 | 250K | **500** | Newest Gemini, highest RPD among Flash models |
+| **Gemini 3.5 Flash** | Google | ~0.8 s | 5 | 250K | 20 | Latest Gemini series; crisp reasoning |
+| **Gemini 3 Flash** | Google | ~9 s | 5 | 250K | 20 | Solid baseline Gemini 3 |
+| **Gemini 2.5 Flash** | Google | ~7 s | 5 | 250K | 20 | Previous generation; well-rounded |
+| **Gemini 2.5 Flash Lite** | Google | ~2 s | 10 | 250K | 20 | Fastest 2.5; same 20 RPD as 2.5 Flash |
+| **Llama 3.1 8B** | Groq | ~2 s | **14,400** | 6K | **14,400** | Highest throughput by far; limited depth |
+| **Llama 4 Scout 17B** | Groq | ~1.5 s | 1,000 | 30K | 1,000 | Fastest quality model overall |
+| **Llama 3.3 70B** | Groq | ~4.5 s | 1,000 | 12K | 1,000 | Best Groq quality; lower token quota |
+| **Qwen3 32B** | Groq | ~5 s | 1,000 | 6K | 1,000 | Chain-of-thought; deepest Groq reasoning |
+| **Nvidia Nemotron 120B** | OpenRouter | ~75 s | 20 | — | 50* | Exceptional philosophical depth; slow |
+| **OpenAI OSS 120B** | OpenRouter | ~22 s | 20 | — | 50* | Strong quality; best free OR option |
+| **DeepSeek V4 Flash** | OpenRouter | ~5 s† | 20 | — | 50* | 1M context window; fast when available |
+| **Llama 3.3 70B** | OpenRouter | ~4 s† | 20 | — | 50* | Same weights as Groq; use Groq instead |
+| **Qwen3 Next 80B** | OpenRouter | ~8 s† | 20 | — | 50* | Strong reasoning; frequently throttled |
+| **Gemma 4 MoE 26B** | OpenRouter | ~5 s† | 20 | — | 50* | Same weights as Google version |
 
-*Latency measured when not throttled / estimated from short ping test  
-**50 RPD without account credits; upgrades to 1,000 RPD with $10+ credit purchase  
-— Not published by provider
+*50 RPD without account credits; 1,000 RPD with $10+ credit purchase  
+†Latency when not throttled; free-tier provider-side 429s are common during peak hours  
+— OpenRouter does not enforce token-based limits on free models
 
 ---
 
 ## Rate Limit Deep-Dive
 
-### Google AI Studio (free tier)
-Source: [ai.google.dev/gemini-api/docs/rate-limits](https://ai.google.dev/gemini-api/docs/rate-limits)
+### Google AI Studio — verified from aistudio.google.com/rate-limit
 
-| Model | RPM | TPM | RPD |
-|---|---|---|---|
-| Gemini 2.5 Pro | 5 | 250,000 | 100 |
-| Gemini 2.5 Flash | 10 | 250,000 | 250 |
-| Gemini 2.5 Flash Lite | 15 | 250,000 | 1,000 |
-| Gemini 2.0 Flash | 10 | 250,000 | 250 |
-| Gemma 4 MoE 26B | n/a | n/a | n/a |
-| Gemma 4 Dense 31B | n/a | n/a | n/a |
-
-> Gemma 4 models are available via the same `google.genai` SDK but rate limits are not documented on the public limits page.
-
----
-
-### Groq (free tier)
-Source: [console.groq.com/docs/rate-limits](https://console.groq.com/docs/rate-limits)  
-Live headers confirmed via API call.
-
-| Model | RPM | TPM | RPD | TPD |
+| Model | API Model ID | RPM | TPM | RPD |
 |---|---|---|---|---|
-| Llama 3.3 70B versatile | 1,000 | 12,000 | 1,000 | 100,000 |
-| Llama 4 Scout 17B | 1,000 | 30,000 | 1,000 | 500,000 |
-| Qwen3 32B | 1,000 | 6,000 | 1,000 | 500,000 |
-| Llama 3.1 8B instant | 14,400 | 6,000 | 14,400 | 500,000 |
+| Gemma 4 MoE 26B | `gemma-4-26b-a4b-it` | 15 | **Unlimited** | **1,500** |
+| Gemma 4 Dense 31B | `gemma-4-31b-it` | 15 | **Unlimited** | **1,500** |
+| Gemini 3.1 Flash Lite | `gemini-3.1-flash-lite` | 15 | 250,000 | **500** |
+| Gemini 3.5 Flash | `gemini-3.5-flash` | 5 | 250,000 | 20 |
+| Gemini 3 Flash | `gemini-3-flash-preview` | 5 | 250,000 | 20 |
+| Gemini 2.5 Flash | `gemini-2.5-flash` | 5 | 250,000 | 20 |
+| Gemini 2.5 Flash Lite | `gemini-2.5-flash-lite` | 10 | 250,000 | 20 |
+| ~~Gemini 2.5 Pro~~ | ~~`gemini-2.5-pro`~~ | 0 | 0 | 0 |
+| ~~Gemini 2.0 Flash~~ | ~~`gemini-2.0-flash`~~ | 0 | 0 | 0 |
 
-> Groq is the most generous free tier by far for high-volume use. Note that `llama-3.3-70b-versatile` has a lower daily token cap (100K vs 500K) — for heavy use, prefer Llama 4 Scout or Qwen3 32B.
+> **Key insight:** Gemma 4 models have *significantly better* limits than Gemini models — unlimited TPM and 1,500 RPD vs just 20 RPD for most Gemini Flash variants. Gemini 2.5 Pro and 2.0 Flash are completely locked (0/0/0) on this account's free tier.
 
 ---
 
-### OpenRouter (`:free` models)
-Source: [openrouter.ai/docs/guides/routing/model-variants/free](https://openrouter.ai/docs/guides/routing/model-variants/free)
+### Groq — verified from live API headers + docs
+
+| Model | API Model ID | RPM | TPM | RPD | TPD |
+|---|---|---|---|---|---|
+| Llama 3.1 8B instant | `llama-3.1-8b-instant` | **14,400** | 6,000 | **14,400** | 500,000 |
+| Llama 3.3 70B versatile | `llama-3.3-70b-versatile` | 1,000 | 12,000 | 1,000 | 100,000 |
+| Llama 4 Scout 17B | `meta-llama/llama-4-scout-17b-16e-instruct` | 1,000 | 30,000 | 1,000 | 500,000 |
+| Qwen3 32B | `qwen/qwen3-32b` | 1,000 | 6,000 | 1,000 | 500,000 |
+
+> **Key insight:** Groq is the most generous free tier for RAG use. Llama 3.1 8B has 14,400 RPD — useful for high-volume scenarios. Note that TPM limits (6K–30K) can be a bottleneck when RAG context is large; Llama 4 Scout has the most generous TPM at 30K.
+
+---
+
+### OpenRouter — all `:free` models share identical limits
 
 | Metric | Without credits | With $10+ credits |
 |---|---|---|
 | RPM | 20 | 20 |
-| RPD | 50 | 1,000 |
-| TPM / TPD | unlimited | unlimited |
+| RPD | **50** | 1,000 |
+| TPM / TPD | Unlimited | Unlimited |
 
-> Rate limits are **identical for all `:free` models** regardless of model size. The 50 RPD cap is the reason for frequent 429 errors during testing — it's exhausted quickly. Provider-side throttling (from upstream like NVIDIA or DeepSeek) adds an additional layer of 429s independent of OpenRouter's own quota.
+> **Key insight:** 50 RPD is exhausted extremely quickly — this explains the frequent 429 errors during testing. OpenRouter free tier is best for occasional access to very large models (120B+) not available elsewhere, not for regular daily use. Provider-side throttling from upstream (NVIDIA, DeepSeek, etc.) adds additional 429s beyond OpenRouter's own quota.
 
 ---
 
 ## Provider Verdict
 
-| Provider | Best for | Bottleneck |
+| Provider | Best for | Main bottleneck |
 |---|---|---|
-| **Groq** | Production-grade free use, fast iteration | TPM (6K–30K) limits long contexts |
-| **Google AI Studio** | High-quality reasoning, large token budgets | RPD caps (100–1,000/day) |
-| **OpenRouter** | Accessing massive models (120B+) for free | RPD cap of 50/day without credits |
+| **Google (Gemma 4)** | Best free tier overall — high RPD + unlimited tokens | Slow inference (~25–65 s) |
+| **Google (Gemini 3.1 Flash Lite)** | Best speed + reasonable daily quota | 500 RPD, 250K TPM |
+| **Groq** | Fastest inference, high-volume use | TPM cap (6K–30K) limits long RAG contexts |
+| **OpenRouter** | Accessing 120B+ models for free | 50 RPD hard cap, frequent provider throttling |
 
 ---
 
@@ -92,12 +97,13 @@ Source: [openrouter.ai/docs/guides/routing/model-variants/free](https://openrout
 
 | Use case | Best choice |
 |---|---|
-| Default / most reliable | Gemini 2.5 Flash [Google] |
-| Lowest latency | Llama 4 Scout 17B [Groq] |
-| Deepest philosophical reasoning | Qwen3 32B [Groq] or Llama 3.3 70B [Groq] |
-| Maximum context window | DeepSeek V4 Flash [OR] — 1M tokens |
-| Highest model quality (when quota allows) | Gemini 2.5 Pro [Google] or Nvidia Nemotron 120B [OR] |
-| High-volume / many requests per day | Llama 3.1 8B [Groq] — 14,400 RPD |
+| Best overall (default) | **Gemma 4 MoE 26B [Google]** — best limits + quality |
+| Fastest response | **Llama 4 Scout 17B [Groq]** — ~1.5 s |
+| Fastest + high daily quota | **Gemini 3.1 Flash Lite [Google]** — 500 RPD, ~0.6 s |
+| Deepest philosophical reasoning | **Qwen3 32B [Groq]** or **Llama 3.3 70B [Groq]** |
+| Maximum context window | **DeepSeek V4 Flash [OR]** — 1M tokens |
+| Highest model quality | **Nvidia Nemotron 120B [OR]** or **OpenAI OSS 120B [OR]** |
+| High-volume / many requests/day | **Llama 3.1 8B [Groq]** — 14,400 RPD |
 
 ---
 
@@ -109,7 +115,7 @@ python test_models.py
 
 Requires `.env` with at least one key:
 ```
-GOOGLE_API_KEY=...      # ai.google.dev
+GOOGLE_API_KEY=...      # aistudio.google.com
 GROQ_API_KEY=...        # console.groq.com
 OPENROUTER_API_KEY=...  # openrouter.ai
 ```

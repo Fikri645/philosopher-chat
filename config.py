@@ -21,12 +21,14 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # ---------------------------------------------------------------------------
 LLM_OPTIONS: dict[str, tuple[str, str]] = {
     # ── Google AI Studio (free tier) ──────────────────────────────────────
-    "Gemma 4 MoE 26B  [Google]":         ("google",      "gemma-4-26b-a4b-it"),
-    "Gemma 4 Dense 31B  [Google]":       ("google",      "gemma-4-31b-it"),
-    "Gemini 2.5 Flash  [Google]":        ("google",      "gemini-2.5-flash"),
-    "Gemini 2.5 Flash Lite  [Google]":   ("google",      "gemini-2.5-flash-lite"),
-    "Gemini 2.5 Pro  [Google]":          ("google",      "gemini-2.5-pro"),
-    "Gemini 2.0 Flash  [Google]":        ("google",      "gemini-2.0-flash"),
+    # Limits verified from aistudio.google.com/rate-limit (2026-05)
+    "Gemma 4 MoE 26B  [Google]":         ("google",      "gemma-4-26b-a4b-it"),    # 15 RPM | ∞ TPM | 1500 RPD
+    "Gemma 4 Dense 31B  [Google]":       ("google",      "gemma-4-31b-it"),         # 15 RPM | ∞ TPM | 1500 RPD
+    "Gemini 3.1 Flash Lite  [Google]":   ("google",      "gemini-3.1-flash-lite"),  # 15 RPM | 250K TPM | 500 RPD
+    "Gemini 3.5 Flash  [Google]":        ("google",      "gemini-3.5-flash"),       #  5 RPM | 250K TPM |  20 RPD
+    "Gemini 3 Flash  [Google]":          ("google",      "gemini-3-flash-preview"), #  5 RPM | 250K TPM |  20 RPD
+    "Gemini 2.5 Flash  [Google]":        ("google",      "gemini-2.5-flash"),       #  5 RPM | 250K TPM |  20 RPD
+    "Gemini 2.5 Flash Lite  [Google]":   ("google",      "gemini-2.5-flash-lite"),  # 10 RPM | 250K TPM |  20 RPD
     # ── Groq (free tier, very fast LPU inference) ─────────────────────────
     "Llama 3.3 70B  [Groq]":             ("groq",        "llama-3.3-70b-versatile"),
     "Llama 4 Scout 17B  [Groq]":         ("groq",        "meta-llama/llama-4-scout-17b-16e-instruct"),
