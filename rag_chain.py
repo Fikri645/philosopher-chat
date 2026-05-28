@@ -204,8 +204,8 @@ def _call_llm(
             role = "model" if turn["role"] == "assistant" else "user"
             content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else _content_to_str(turn["content"])
             if content:
-                contents.append({"role": role, "parts": [content]})
-        contents.append({"role": "user", "parts": [final_user]})
+                contents.append({"role": role, "parts": [{"text": content}]})
+        contents.append({"role": "user", "parts": [{"text": final_user}]})
         response = _get_genai_client().models.generate_content(
             model=model_id,
             contents=contents,
@@ -274,8 +274,8 @@ def stream_llm(
             role = "model" if turn["role"] == "assistant" else "user"
             content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else _content_to_str(turn["content"])
             if content:
-                contents.append({"role": role, "parts": [content]})
-        contents.append({"role": "user", "parts": [final_user]})
+                contents.append({"role": role, "parts": [{"text": content}]})
+        contents.append({"role": "user", "parts": [{"text": final_user}]})
         for chunk in _get_genai_client().models.generate_content_stream(
             model=model_id,
             contents=contents,
