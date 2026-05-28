@@ -1,3 +1,4 @@
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Generator
@@ -28,6 +29,19 @@ SYSTEM_PROMPT = (
     "- If the context is insufficient, say so clearly.\n"
     "- Present the philosophers' views faithfully without moralizing."
 )
+
+
+def _clean_for_history(text: str) -> str:
+    """Strip HTML tags and source footer from stored assistant messages.
+
+    Assistant responses contain <details>/<div> think blocks and a
+    '--- **Sources:**' footer injected by the UI — remove both before
+    passing prior turns as LLM history, so models see clean prose only.
+    """
+    text = re.sub(r"<[^>]+>", " ", text)                              # strip HTML
+    text = re.sub(r"\n\n---\n\*\*Sources:\*\*.*$", "", text,          # strip footer
+                  flags=re.DOTALL)
+    return " ".join(text.split())                                      # normalise whitespace
 
 
 # ---------------------------------------------------------------------------
@@ -143,18 +157,26 @@ def retrieve_docs(
 # LLM calls — non-streaming
 # ---------------------------------------------------------------------------
 
-def _call_llm(provider: str, model_id: str, context_str: str, input_text: str) -> str:
-    user_content = (
-        f"Context from philosophical texts:\n{context_str}\n\nQuestion: {input_text}"
-    )
+def _call_llm(
+    provider: str, model_id: str, context_str: str, input_text: str,
+    history: list[dict] | None = None,
+) -> str:
+    final_user = f"Context from philosophical texts:\n{context_str}\n\nQuestion: {input_text}"
 
     if provider == "google":
         if not GOOGLE_API_KEY:
             env_var, site = PROVIDER_KEYS["google"]
             raise ValueError(f"{env_var} not set. Get a free key at {site}")
+        contents = []
+        for turn in (history or []):
+            role = "model" if turn["role"] == "assistant" else "user"
+            content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
+            if content:
+                contents.append({"role": role, "parts": [content]})
+        contents.append({"role": "user", "parts": [final_user]})
         response = _get_genai_client().models.generate_content(
             model=model_id,
-            contents=user_content,
+            contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT, temperature=0.3
             ),
@@ -181,12 +203,16 @@ def _call_llm(provider: str, model_id: str, context_str: str, input_text: str) -
     else:
         raise ValueError(f"Unknown provider: {provider!r}")
 
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for turn in (history or []):
+        role = "assistant" if turn["role"] == "assistant" else "user"
+        content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
+        if content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": final_user})
     resp = client.chat.completions.create(
         model=model_id,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
+        messages=messages,
         temperature=0.3,
     )
     return resp.choices[0].message.content
@@ -197,20 +223,30 @@ def _call_llm(provider: str, model_id: str, context_str: str, input_text: str) -
 # ---------------------------------------------------------------------------
 
 def stream_llm(
-    provider: str, model_id: str, context_str: str, input_text: str
+    provider: str, model_id: str, context_str: str, input_text: str,
+    history: list[dict] | None = None,
 ) -> Generator[str, None, None]:
-    """Yield text chunks for real-time streaming."""
-    user_content = (
-        f"Context from philosophical texts:\n{context_str}\n\nQuestion: {input_text}"
-    )
+    """Yield text chunks for real-time streaming.
+
+    history: previous turns as [{"role": "user"|"assistant", "content": "..."}].
+    Pass all completed turns so the model understands follow-up questions.
+    """
+    final_user = f"Context from philosophical texts:\n{context_str}\n\nQuestion: {input_text}"
 
     if provider == "google":
         if not GOOGLE_API_KEY:
             env_var, site = PROVIDER_KEYS["google"]
             raise ValueError(f"{env_var} not set. Get a free key at {site}")
+        contents = []
+        for turn in (history or []):
+            role = "model" if turn["role"] == "assistant" else "user"
+            content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
+            if content:
+                contents.append({"role": role, "parts": [content]})
+        contents.append({"role": "user", "parts": [final_user]})
         for chunk in _get_genai_client().models.generate_content_stream(
             model=model_id,
-            contents=user_content,
+            contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT, temperature=0.3
             ),
@@ -239,12 +275,16 @@ def stream_llm(
                     "HTTP-Referer": "https://github.com/Fikri645/philosopher-chat"
                 },
             )
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for turn in (history or []):
+            role = "assistant" if turn["role"] == "assistant" else "user"
+            content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
+            if content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": final_user})
         stream = client.chat.completions.create(
             model=model_id,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
+            messages=messages,
             temperature=0.3,
             stream=True,
         )

@@ -148,9 +148,20 @@ def respond_stream(message: str, history: list, philosopher: str, llm_label: str
         yield history + [{"role": "assistant", "content": err}], "", gr.update(), gr.update()
         return
 
+    # — Build retrieval query —
+    # For short follow-ups ("bahas lebih lanjut", "elaborate", etc.) that lack
+    # standalone meaning, prepend the last user message so retrieval has context.
+    retrieval_query = message
+    if len(message.split()) <= 8 and history:
+        last_user = next(
+            (t["content"] for t in reversed(history) if t["role"] == "user"), ""
+        )
+        if last_user:
+            retrieval_query = f"{last_user} {message}"
+
     # — Retrieval (fast, happens before streaming) —
     t0 = time.perf_counter()
-    docs, scores = retrieve_docs(message, philosopher)
+    docs, scores = retrieve_docs(retrieval_query, philosopher)
     retrieve_time = time.perf_counter() - t0
     context_str = "\n\n".join(d.page_content for d in docs)
 
@@ -174,7 +185,7 @@ def respond_stream(message: str, history: list, philosopher: str, llm_label: str
     t1 = time.perf_counter()
     full_response = ""
     try:
-        for text_chunk in stream_llm(provider, model_id, context_str, message):
+        for text_chunk in stream_llm(provider, model_id, context_str, message, history=history[:-2]):
             full_response += text_chunk
             history[-1]["content"] = _format_think_blocks(full_response)
             yield history, "", gr.update(value=chunks_md), gr.update()
