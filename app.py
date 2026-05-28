@@ -248,16 +248,29 @@ def build_umap_plot():
         df, x="x", y="y",
         color="philosopher",
         hover_data={"title": True, "preview": True, "x": False, "y": False},
-        title="Knowledge Base — Semantic Embedding Space (UMAP 2D projection)",
+        title="Knowledge Base — Semantic Embedding Space (UMAP 2D)",
         labels={"x": "UMAP-1", "y": "UMAP-2"},
-        opacity=0.65,
+        opacity=0.75,
+        template="plotly_dark",
+        color_discrete_sequence=px.colors.qualitative.Bold,
     )
-    fig.update_traces(marker=dict(size=4))
+    fig.update_traces(marker=dict(size=5))
     fig.update_layout(
-        height=520,
+        height=540,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+        title_font=dict(size=14),
+        font=dict(color="rgba(220,220,220,0.9)"),
+        legend=dict(
+            title_text="",
+            yanchor="top", y=0.99, xanchor="left", x=0.01,
+            bgcolor="rgba(20,20,20,0.5)",
+            bordercolor="rgba(255,255,255,0.12)",
+            borderwidth=1,
+        ),
+        xaxis=dict(gridcolor="rgba(255,255,255,0.07)", zeroline=False),
+        yaxis=dict(gridcolor="rgba(255,255,255,0.07)", zeroline=False),
+        margin=dict(l=40, r=20, t=48, b=36),
     )
     return fig
 
