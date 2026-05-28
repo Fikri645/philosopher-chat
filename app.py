@@ -118,16 +118,21 @@ def respond_stream(message: str, history: list, philosopher: str, llm_label: str
 
     history = history + [
         {"role": "user",      "content": message},
-        {"role": "assistant", "content": ""},
+        {"role": "assistant", "content": "▌"},  # typing cursor — keeps loading feel
     ]
-    # Yield immediately so the user bubble appears before the LLM starts
+    # Show user bubble + cursor immediately, before LLM first token
     yield history, "", gr.update(value=chunks_md), gr.update()
 
     provider, model_id = LLM_OPTIONS.get(llm_label, LLM_OPTIONS[DEFAULT_LLM])
     t1 = time.perf_counter()
+    is_first_chunk = True
     try:
         for text_chunk in stream_llm(provider, model_id, context_str, message):
-            history[-1]["content"] += text_chunk
+            if is_first_chunk:
+                history[-1]["content"] = text_chunk  # replace cursor with real content
+                is_first_chunk = False
+            else:
+                history[-1]["content"] += text_chunk
             yield history, "", gr.update(value=chunks_md), gr.update()
 
         llm_time = time.perf_counter() - t1
@@ -138,7 +143,7 @@ def respond_stream(message: str, history: list, philosopher: str, llm_label: str
         yield history, "", gr.update(value=chunks_md), gr.update(value=metrics_md)
 
     except Exception as exc:
-        history[-1]["content"] = f"⚠️ **Error:** {exc}"
+        history[-1]["content"] = f"⚠️ **Error:** {exc}"  # replaces cursor on error too
         yield history, "", gr.update(value=chunks_md), gr.update()
 
 
