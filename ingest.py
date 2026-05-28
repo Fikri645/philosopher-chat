@@ -1,12 +1,11 @@
 """
-Run this script once locally to download texts and build the ChromaDB vectorstore.
+Build or update the ChromaDB vectorstore from philosophical texts.
 
-    python ingest.py
-
-The resulting `vectorstore/` directory should be committed to the repo so HuggingFace
-Spaces can load it without rebuilding on every cold start.
+    python ingest.py           # incremental: skips already-indexed sources
+    python ingest.py --rebuild # wipes and rebuilds from scratch
 """
 
+import sys
 import time
 import requests
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -20,12 +19,12 @@ from config import (
 
 GUTENBERG_URL = "https://www.gutenberg.org/cache/epub/{id}/pg{id}.txt"
 BATCH_SIZE = 50
-RATE_LIMIT_SLEEP = 2  # seconds between embedding batches
+SLEEP_BETWEEN_BATCHES = 2
 
 
 def download_gutenberg(gutenberg_id: int, title: str) -> str:
     url = GUTENBERG_URL.format(id=gutenberg_id)
-    print(f"  Downloading from {url}")
+    print(f"  Downloading {url}")
     try:
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
@@ -40,122 +39,121 @@ def strip_gutenberg_boilerplate(text: str) -> str:
         "*** START OF THE PROJECT GUTENBERG",
         "***START OF THE PROJECT GUTENBERG",
         "*** START OF THIS PROJECT GUTENBERG",
-        "*END*THE SMALL PRINT",
     ]
     end_markers = [
         "*** END OF THE PROJECT GUTENBERG",
         "***END OF THE PROJECT GUTENBERG",
         "*** END OF THIS PROJECT GUTENBERG",
     ]
-
     start_idx = 0
     for marker in start_markers:
         idx = text.find(marker)
         if idx != -1:
             start_idx = text.find("\n", idx) + 1
             break
-
     end_idx = len(text)
     for marker in end_markers:
         idx = text.find(marker)
         if idx != -1:
             end_idx = idx
             break
-
     return text[start_idx:end_idx].strip()
 
 
-def build_documents() -> list[Document]:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
-        separators=["\n\n", "\n", ". ", " ", ""],
-    )
-
-    all_docs: list[Document] = []
-
-    for source in SOURCES:
-        philosopher = source["philosopher"]
-        title = source["title"]
-        print(f"\n[{philosopher}] {title}")
-
-        raw = download_gutenberg(source["gutenberg_id"], title)
-        if not raw:
-            print("  SKIPPED (download failed)")
-            continue
-
-        cleaned = strip_gutenberg_boilerplate(raw)
-
-        # Cache locally so you can re-run without re-downloading
-        safe_name = f"{philosopher}_{title[:40].replace(' ', '_')}.txt"
-        cache_path = DATA_DIR / safe_name
-        cache_path.write_text(cleaned, encoding="utf-8")
-
-        chunks = splitter.split_text(cleaned)
-        for chunk in chunks:
-            all_docs.append(Document(
-                page_content=chunk,
-                metadata={
-                    "philosopher": philosopher,
-                    "title": title,
-                    "source": f"{philosopher} — *{title}*",
-                },
-            ))
-
-        print(f"  -> {len(chunks)} chunks")
-        time.sleep(1)
-
-    return all_docs
-
-
-def embed_and_store(docs: list[Document]) -> None:
-    VECTORSTORE_DIR.mkdir(parents=True, exist_ok=True)
-
-    print(f"Embedding device: {DEVICE}")
-    embeddings = HuggingFaceEmbeddings(
+def get_embeddings() -> HuggingFaceEmbeddings:
+    print(f"Loading embedding model on {DEVICE}...")
+    return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         model_kwargs={"device": DEVICE},
         encode_kwargs={"prompt_name": "document", "normalize_embeddings": True},
         query_encode_kwargs={"prompt_name": "query", "normalize_embeddings": True},
     )
 
-    print(f"\nEmbedding {len(docs)} chunks in batches of {BATCH_SIZE}...")
-    vectorstore = None
-    total_batches = (len(docs) + BATCH_SIZE - 1) // BATCH_SIZE
+
+def get_indexed_titles(vectorstore: Chroma) -> set[str]:
+    result = vectorstore.get(include=["metadatas"])
+    return {m.get("title", "") for m in result["metadatas"]}
+
+
+def ingest_source(source: dict, vectorstore: Chroma, splitter: RecursiveCharacterTextSplitter) -> int:
+    raw = download_gutenberg(source["gutenberg_id"], source["title"])
+    if not raw:
+        return 0
+
+    cleaned = strip_gutenberg_boilerplate(raw)
+
+    # Cache locally
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    safe_name = f"{source['philosopher']}_{source['title'][:40].replace(' ', '_')}.txt"
+    (DATA_DIR / safe_name).write_text(cleaned, encoding="utf-8")
+
+    chunks = splitter.split_text(cleaned)
+    docs = [
+        Document(
+            page_content=chunk,
+            metadata={
+                "philosopher": source["philosopher"],
+                "title": source["title"],
+                "source": f"{source['philosopher']} — *{source['title']}*",
+            },
+        )
+        for chunk in chunks
+    ]
 
     for i in range(0, len(docs), BATCH_SIZE):
-        batch = docs[i : i + BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
-        print(f"  Batch {batch_num}/{total_batches}...")
+        vectorstore.add_documents(docs[i : i + BATCH_SIZE])
+        if i + BATCH_SIZE < len(docs):
+            time.sleep(SLEEP_BETWEEN_BATCHES)
 
-        if vectorstore is None:
-            vectorstore = Chroma.from_documents(
-                documents=batch,
-                embedding=embeddings,
-                collection_name="philosophers",
-                persist_directory=str(VECTORSTORE_DIR),
-            )
-        else:
-            vectorstore.add_documents(batch)
-
-        if batch_num < total_batches:
-            time.sleep(RATE_LIMIT_SLEEP)
-
-    print(f"\nVectorstore saved to: {VECTORSTORE_DIR}")
+    return len(docs)
 
 
 def main() -> None:
+    rebuild = "--rebuild" in sys.argv
+
     if not GOOGLE_API_KEY:
-        raise EnvironmentError("GOOGLE_API_KEY not set. Add it to your .env file.")
+        raise EnvironmentError("GOOGLE_API_KEY not set in .env")
 
-    docs = build_documents()
-    if not docs:
-        raise RuntimeError("No documents were loaded. Check your internet connection.")
+    VECTORSTORE_DIR.mkdir(parents=True, exist_ok=True)
 
-    embed_and_store(docs)
-    print("\nDone! Commit the `vectorstore/` directory to include it in HuggingFace Spaces.")
+    embeddings = get_embeddings()
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+
+    if rebuild and VECTORSTORE_DIR.exists():
+        import shutil
+        shutil.rmtree(VECTORSTORE_DIR)
+        VECTORSTORE_DIR.mkdir()
+        print("Vectorstore wiped for rebuild.")
+
+    vectorstore = Chroma(
+        collection_name="philosophers",
+        embedding_function=embeddings,
+        persist_directory=str(VECTORSTORE_DIR),
+    )
+
+    already_indexed = get_indexed_titles(vectorstore) if not rebuild else set()
+    total_new = 0
+
+    for source in SOURCES:
+        print(f"\n[{source['philosopher']}] {source['title']}")
+        if source["title"] in already_indexed:
+            print("  SKIPPED (already indexed)")
+            continue
+
+        n = ingest_source(source, vectorstore, splitter)
+        if n:
+            print(f"  -> {n} chunks added")
+            total_new += n
+        time.sleep(1)
+
+    if total_new:
+        print(f"\nDone. {total_new} new chunks added to vectorstore.")
+    else:
+        print("\nNothing new to index.")
 
 
 if __name__ == "__main__":
