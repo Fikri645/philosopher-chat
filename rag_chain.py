@@ -31,6 +31,26 @@ SYSTEM_PROMPT = (
 )
 
 
+def _content_to_str(content) -> str:
+    """Normalise Gradio chatbot message content to a plain string.
+
+    Gradio 5/6 can serialise content as:
+    - str  — plain text or HTML
+    - list — blocks like [{"type": "text", "text": "…"}, …]
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(block.get("text", block.get("content", "")))
+        return " ".join(parts)
+    return str(content)
+
+
 def _trim_history(history: list[dict] | None) -> list[dict]:
     """Keep only the most recent MAX_HISTORY_TURNS turns (user+assistant pairs).
 
@@ -44,13 +64,12 @@ def _trim_history(history: list[dict] | None) -> list[dict]:
     return history[-cutoff:] if len(history) > cutoff else list(history)
 
 
-def _clean_for_history(text: str) -> str:
+def _clean_for_history(text) -> str:
     """Strip HTML tags and source footer from stored assistant messages.
 
-    Assistant responses contain <details>/<div> think blocks and a
-    '--- **Sources:**' footer injected by the UI — remove both before
-    passing prior turns as LLM history, so models see clean prose only.
+    Accepts str or Gradio list-of-blocks content; always returns clean plain text.
     """
+    text = _content_to_str(text)
     text = re.sub(r"<[^>]+>", " ", text)                              # strip HTML
     text = re.sub(r"\n\n---\n\*\*Sources:\*\*.*$", "", text,          # strip footer
                   flags=re.DOTALL)
@@ -183,7 +202,7 @@ def _call_llm(
         contents = []
         for turn in _trim_history(history):
             role = "model" if turn["role"] == "assistant" else "user"
-            content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
+            content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else _content_to_str(turn["content"])
             if content:
                 contents.append({"role": role, "parts": [content]})
         contents.append({"role": "user", "parts": [final_user]})
@@ -253,7 +272,7 @@ def stream_llm(
         contents = []
         for turn in _trim_history(history):
             role = "model" if turn["role"] == "assistant" else "user"
-            content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
+            content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else _content_to_str(turn["content"])
             if content:
                 contents.append({"role": role, "parts": [content]})
         contents.append({"role": "user", "parts": [final_user]})
@@ -291,7 +310,7 @@ def stream_llm(
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         for turn in _trim_history(history):
             role = "assistant" if turn["role"] == "assistant" else "user"
-            content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
+            content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else _content_to_str(turn["content"])
             if content:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": final_user})
