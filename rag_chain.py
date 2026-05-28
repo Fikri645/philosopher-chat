@@ -14,7 +14,7 @@ from config import (
     LLM_OPTIONS, DEFAULT_LLM,
     EMBEDDING_MODEL, VECTORSTORE_DIR, RETRIEVAL_K,
     CHUNK_SIZE, CHUNK_OVERLAP, DEVICE, PROVIDER_KEYS,
-    USE_HYBRID_SEARCH,
+    USE_HYBRID_SEARCH, MAX_HISTORY_TURNS,
 )
 
 SYSTEM_PROMPT = (
@@ -29,6 +29,19 @@ SYSTEM_PROMPT = (
     "- If the context is insufficient, say so clearly.\n"
     "- Present the philosophers' views faithfully without moralizing."
 )
+
+
+def _trim_history(history: list[dict] | None) -> list[dict]:
+    """Keep only the most recent MAX_HISTORY_TURNS turns (user+assistant pairs).
+
+    One turn = one user message + one assistant message = 2 list items.
+    Older turns are dropped to stay within 32 K-context model limits.
+    """
+    if not history:
+        return []
+    # Each turn is 2 items; keep the last MAX_HISTORY_TURNS * 2 messages
+    cutoff = MAX_HISTORY_TURNS * 2
+    return history[-cutoff:] if len(history) > cutoff else list(history)
 
 
 def _clean_for_history(text: str) -> str:
@@ -168,7 +181,7 @@ def _call_llm(
             env_var, site = PROVIDER_KEYS["google"]
             raise ValueError(f"{env_var} not set. Get a free key at {site}")
         contents = []
-        for turn in (history or []):
+        for turn in _trim_history(history):
             role = "model" if turn["role"] == "assistant" else "user"
             content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
             if content:
@@ -204,7 +217,7 @@ def _call_llm(
         raise ValueError(f"Unknown provider: {provider!r}")
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for turn in (history or []):
+    for turn in _trim_history(history):
         role = "assistant" if turn["role"] == "assistant" else "user"
         content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
         if content:
@@ -238,7 +251,7 @@ def stream_llm(
             env_var, site = PROVIDER_KEYS["google"]
             raise ValueError(f"{env_var} not set. Get a free key at {site}")
         contents = []
-        for turn in (history or []):
+        for turn in _trim_history(history):
             role = "model" if turn["role"] == "assistant" else "user"
             content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
             if content:
@@ -276,7 +289,7 @@ def stream_llm(
                 },
             )
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for turn in (history or []):
+        for turn in _trim_history(history):
             role = "assistant" if turn["role"] == "assistant" else "user"
             content = _clean_for_history(turn["content"]) if turn["role"] == "assistant" else turn["content"]
             if content:

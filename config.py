@@ -77,6 +77,12 @@ CHUNK_OVERLAP     = 150
 RETRIEVAL_K       = 6       # slightly more to absorb BM25 extras
 USE_HYBRID_SEARCH = True    # BM25 + semantic ensemble
 
+# Max number of *turns* (1 turn = 1 user + 1 assistant message) to keep in
+# LLM history. Each RAG turn adds ~7 000 tokens (6 chunks + Q + A), so 4 turns
+# ≈ 28 K tokens — safely under the 32 K limit of Gemma/Qwen3 while leaving
+# room for the system prompt and the new question+context.
+MAX_HISTORY_TURNS = 4
+
 # ---------------------------------------------------------------------------
 # Knowledge base sources (Project Gutenberg)
 # ---------------------------------------------------------------------------
