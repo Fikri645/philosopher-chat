@@ -504,5 +504,19 @@ Hybrid BM25 + Semantic retrieval &nbsp;·&nbsp; Real-time streaming
     ).then(refresh_kb, outputs=kb_display)
 
 
+def _auto_ingest() -> None:
+    """Build the vectorstore automatically on first Spaces run."""
+    if not vectorstore_exists():
+        print("[startup] Vectorstore missing — running initial ingest (this takes ~10 min)…")
+        try:
+            import ingest
+            ingest.main()
+            print("[startup] Ingest complete.")
+        except Exception as exc:
+            print(f"[startup] Ingest failed: {exc}")
+
+
+_auto_ingest()
+
 if __name__ == "__main__":
     demo.launch(css=CSS)

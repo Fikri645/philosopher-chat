@@ -1,21 +1,52 @@
+---
+title: Philosopher Chat
+emoji: 🏛️
+colorFrom: purple
+colorTo: indigo
+sdk: gradio
+sdk_version: 6.15.1
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # Philosopher Chat
 
 A RAG (Retrieval-Augmented Generation) chatbot grounded in Western philosophical primary texts.
-Ask questions about nihilism, pessimism, epistemology, and ethics — and get answers cited directly
-from the source texts.
+Ask questions about nihilism, existentialism, epistemology, ethics, and more — answers are
+cited directly from 12 primary texts (~5,700 chunks).
 
-**Live demo:** [HuggingFace Spaces — link after deploy]
+**Live demo:** [fikri0o0/philosopher-chat on HuggingFace Spaces](https://huggingface.co/spaces/fikri0o0/philosopher-chat)
+
+---
+
+## Features
+
+| Feature | Detail |
+|---|---|
+| **Hybrid RAG** | BM25 + semantic cosine similarity ensemble |
+| **Streaming** | Token-by-token via Google / Groq / OpenRouter |
+| **16 LLMs** | Gemma 4, Gemini, Llama 4, Qwen3, DeepSeek, Nemotron — all free tier |
+| **Think blocks** | Qwen3 / DeepSeek reasoning rendered as collapsible chains-of-thought |
+| **UMAP viz** | 2D projection of all 5,700+ embeddings coloured by philosopher |
+| **Model comparison** | Side-by-side latency + quality comparison across any two models |
+| **Extendable KB** | Upload your own PDF/TXT to add new philosophers |
 
 ---
 
 ## Knowledge Base
 
-| Philosopher | Work |
+| Philosopher | Works |
 |---|---|
-| Nietzsche | *Thus Spoke Zarathustra*, *Beyond Good and Evil*, *On the Genealogy of Morality* |
+| Nietzsche | *Thus Spoke Zarathustra*, *Beyond Good and Evil*, *On the Genealogy of Morality*, *The Birth of Tragedy* |
 | Schopenhauer | *Essays of Arthur Schopenhauer* |
 | Hume | *An Enquiry Concerning Human Understanding* |
 | Russell | *The Problems of Philosophy* |
+| Marcus Aurelius | *Meditations* |
+| Plato | *The Republic* |
+| Mill | *Utilitarianism* |
+| Epictetus | *The Enchiridion* |
+| Kant | *Fundamental Principles of the Metaphysic of Morals* |
 
 All texts are public domain, sourced from [Project Gutenberg](https://www.gutenberg.org).
 
@@ -25,11 +56,11 @@ All texts are public domain, sourced from [Project Gutenberg](https://www.gutenb
 
 | Layer | Tool |
 |---|---|
-| LLM | Gemma 4 (`gemma-4-27b-it`) via Google Gemini API |
-| Embeddings | `text-embedding-004` (Google) |
-| RAG Framework | LangChain |
-| Vector Store | ChromaDB (persistent) |
-| UI | Gradio |
+| LLM routing | 16 models via Google AI Studio, Groq, OpenRouter (all free tier) |
+| Embeddings | `google/embeddinggemma-300m` (HuggingFace, 768-dim) |
+| Retrieval | Hybrid BM25 + ChromaDB semantic search |
+| RAG Framework | LangChain LCEL (no chains, direct composition) |
+| UI | Gradio 6 |
 | Deployment | HuggingFace Spaces |
 
 ---
@@ -39,16 +70,19 @@ All texts are public domain, sourced from [Project Gutenberg](https://www.gutenb
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/philosopher-chat
+git clone https://github.com/Fikri645/philosopher-chat
 cd philosopher-chat
 pip install -r requirements.txt
 ```
 
-### 2. Set up API key
+### 2. Set up API keys
 
 ```bash
-cp .env.example .env
-# Edit .env and add your GOOGLE_API_KEY from https://ai.google.dev
+# Create .env with your keys:
+GOOGLE_API_KEY=...       # https://ai.google.dev  (free)
+GROQ_API_KEY=...         # https://console.groq.com  (free)
+OPENROUTER_API_KEY=...   # https://openrouter.ai  (free)
+HF_TOKEN=...             # https://huggingface.co/settings/tokens  (for gated EmbeddingGemma)
 ```
 
 ### 3. Build the vectorstore (run once)
@@ -57,9 +91,8 @@ cp .env.example .env
 python ingest.py
 ```
 
-This downloads ~6 philosophical texts from Project Gutenberg, chunks them, embeds with
-`text-embedding-004`, and persists the ChromaDB vectorstore to `vectorstore/`.
-Takes ~2–5 minutes depending on your connection and API rate limits.
+Downloads 12 texts from Project Gutenberg, chunks them, embeds with EmbeddingGemma-300M,
+and persists to `vectorstore/`. Takes ~5–10 min on first run (model download + embedding).
 
 ### 4. Run the app
 
@@ -73,30 +106,13 @@ Open http://localhost:7860 in your browser.
 
 ## Deploying to HuggingFace Spaces
 
-1. Create a new Space on [huggingface.co/spaces](https://huggingface.co/spaces) — SDK: **Gradio**
-2. In Space Settings → Secrets, add `GOOGLE_API_KEY`
-3. Commit and push (include `vectorstore/` — it's the pre-built index):
-
-```bash
-git add .
-git commit -m "initial commit with pre-built vectorstore"
-git push
-```
-
-The app will load the pre-committed vectorstore on startup — no re-indexing needed.
-
----
-
-## Experiment Tracking (MLflow)
-
-To compare retrieval configurations (chunk size, k, etc.):
-
-```bash
-pip install mlflow
-mlflow ui  # open http://localhost:5000
-```
-
-See `notebooks/retrieval_eval.ipynb` for the experiment setup.
+1. Fork or push to a new Space (SDK: **Gradio**)
+2. In **Space Settings → Variables and Secrets**, add:
+   - `GOOGLE_API_KEY`
+   - `GROQ_API_KEY`
+   - `OPENROUTER_API_KEY`
+   - `HF_TOKEN` (your HF token — needed to download the gated EmbeddingGemma model)
+3. On first boot the Space auto-ingests all 12 texts (~10 min); subsequent boots load the cached vectorstore.
 
 ---
 
@@ -104,15 +120,11 @@ See `notebooks/retrieval_eval.ipynb` for the experiment setup.
 
 ```
 philosopher-chat/
-├── app.py              ← Gradio UI
-├── rag_chain.py        ← LangChain RAG pipeline
-├── ingest.py           ← One-time data ingestion script
-├── config.py           ← Constants (models, paths, sources)
+├── app.py              ← Gradio UI + event handlers
+├── rag_chain.py        ← LangChain RAG pipeline (retrieval + LLM routing)
+├── ingest.py           ← Data ingestion from Project Gutenberg
+├── config.py           ← LLM options, embedding model, RAG parameters
 ├── requirements.txt
-├── .env.example
 ├── .gitignore
-├── README.md
-├── data/
-│   └── texts/          ← Cached raw texts (gitignored)
-└── vectorstore/        ← ChromaDB persistent store (committed)
+└── README.md
 ```

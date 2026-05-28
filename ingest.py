@@ -13,7 +13,7 @@ from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from config import (
-    DATA_DIR, VECTORSTORE_DIR, GOOGLE_API_KEY,
+    DATA_DIR, VECTORSTORE_DIR,
     EMBEDDING_MODEL, CHUNK_SIZE, CHUNK_OVERLAP, SOURCES, DEVICE
 )
 
@@ -110,9 +110,6 @@ def ingest_source(source: dict, vectorstore: Chroma, splitter: RecursiveCharacte
 
 def main() -> None:
     rebuild = "--rebuild" in sys.argv
-
-    if not GOOGLE_API_KEY:
-        raise EnvironmentError("GOOGLE_API_KEY not set in .env")
 
     VECTORSTORE_DIR.mkdir(parents=True, exist_ok=True)
 
