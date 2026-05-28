@@ -144,7 +144,7 @@ def respond_stream(message: str, history: list, philosopher: str, llm_label: str
         return
 
     if not vectorstore_exists():
-        err = "Knowledge base not found. Run `python ingest.py` first."
+        err = "⏳ Knowledge base is still being built on first run (~10 min). Please wait and try again."
         yield history + [{"role": "assistant", "content": err}], "", gr.update(), gr.update()
         return
 
@@ -197,7 +197,7 @@ def compare_respond(message: str, philosopher: str, llm_a: str, llm_b: str):
     if not message.strip():
         return "Enter a question above.", "", "Enter a question above.", ""
     if not vectorstore_exists():
-        msg = "Knowledge base not found."
+        msg = "⏳ Knowledge base is still being built on first run (~10 min). Please wait and try again."
         return msg, "", msg, ""
 
     def _run(llm_label: str) -> tuple[str, str]:
@@ -505,15 +505,20 @@ Hybrid BM25 + Semantic retrieval &nbsp;·&nbsp; Real-time streaming
 
 
 def _auto_ingest() -> None:
-    """Build the vectorstore automatically on first Spaces run."""
+    """Trigger background KB build on first Spaces run (non-blocking)."""
     if not vectorstore_exists():
-        print("[startup] Vectorstore missing — running initial ingest (this takes ~10 min)…")
-        try:
-            import ingest
-            ingest.main()
-            print("[startup] Ingest complete.")
-        except Exception as exc:
-            print(f"[startup] Ingest failed: {exc}")
+        print("[startup] Vectorstore missing — starting background ingest (~10 min)…")
+        import threading
+
+        def _run() -> None:
+            try:
+                import ingest
+                ingest.main()
+                print("[startup] Ingest complete. Knowledge base is now ready.")
+            except Exception as exc:
+                print(f"[startup] Ingest failed: {exc}")
+
+        threading.Thread(target=_run, daemon=True).start()
 
 
 _auto_ingest()
