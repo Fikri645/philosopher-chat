@@ -1,5 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Generator
+
 from google import genai
 from google.genai import types
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -10,7 +12,8 @@ from config import (
     GOOGLE_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY,
     LLM_OPTIONS, DEFAULT_LLM,
     EMBEDDING_MODEL, VECTORSTORE_DIR, RETRIEVAL_K,
-    CHUNK_SIZE, CHUNK_OVERLAP, DEVICE, PROVIDER_KEYS
+    CHUNK_SIZE, CHUNK_OVERLAP, DEVICE, PROVIDER_KEYS,
+    USE_HYBRID_SEARCH,
 )
 
 SYSTEM_PROMPT = (
@@ -26,6 +29,10 @@ SYSTEM_PROMPT = (
     "- Present the philosophers' views faithfully without moralizing."
 )
 
+
+# ---------------------------------------------------------------------------
+# Cached singletons
+# ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
 def _get_genai_client() -> genai.Client:
@@ -51,6 +58,29 @@ def _get_vectorstore() -> Chroma:
     )
 
 
+@lru_cache(maxsize=1)
+def _get_bm25_retriever():
+    """Build BM25 index over the full KB (cached after first call)."""
+    from langchain_community.retrievers import BM25Retriever  # requires rank-bm25
+    result = _get_vectorstore().get(include=["documents", "metadatas"])
+    docs = [
+        Document(page_content=d, metadata=m)
+        for d, m in zip(result["documents"], result["metadatas"])
+        if d.strip()
+    ]
+    retriever = BM25Retriever.from_documents(docs)
+    retriever.k = RETRIEVAL_K
+    return retriever
+
+
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
+
+def vectorstore_exists() -> bool:
+    return (VECTORSTORE_DIR / "chroma.sqlite3").exists()
+
+
 def get_all_philosophers() -> list[str]:
     if not vectorstore_exists():
         return ["All"]
@@ -60,7 +90,6 @@ def get_all_philosophers() -> list[str]:
 
 
 def get_kb_stats() -> dict:
-    """Returns dict with total chunks and source breakdown."""
     if not vectorstore_exists():
         return {"total": 0, "sources": {}}
     result = _get_vectorstore().get(include=["metadatas"])
@@ -72,28 +101,62 @@ def get_kb_stats() -> dict:
     return {"total": len(result["ids"]), "sources": sources}
 
 
-def get_retriever(philosopher: str = "All"):
+# ---------------------------------------------------------------------------
+# Retrieval
+# ---------------------------------------------------------------------------
+
+def retrieve_docs(
+    input_text: str, philosopher: str = "All"
+) -> tuple[list[Document], list[float]]:
+    """Hybrid BM25 + semantic retrieval.
+
+    Returns (docs, scores) where scores are cosine relevance ∈ [0, 1].
+    BM25-only results are tagged with score -1.0 (no embedding similarity).
+    """
     vectorstore = _get_vectorstore()
     search_kwargs: dict = {"k": RETRIEVAL_K}
     if philosopher != "All":
         search_kwargs["filter"] = {"philosopher": philosopher}
-    return vectorstore.as_retriever(search_type="similarity", search_kwargs=search_kwargs)
 
+    pairs = vectorstore.similarity_search_with_relevance_scores(input_text, **search_kwargs)
+
+    if USE_HYBRID_SEARCH and philosopher == "All":
+        try:
+            bm25_docs = _get_bm25_retriever().invoke(input_text)
+            seen = {doc.page_content for doc, _ in pairs}
+            for doc in bm25_docs[:2]:
+                if doc.page_content not in seen:
+                    pairs.append((doc, -1.0))
+                    seen.add(doc.page_content)
+        except Exception:
+            pass
+
+    # Sort: semantic scores descending, BM25 appended at end
+    semantic = sorted([(d, s) for d, s in pairs if s >= 0], key=lambda x: x[1], reverse=True)
+    bm25_only = [(d, s) for d, s in pairs if s < 0]
+    pairs = (semantic + bm25_only)[: RETRIEVAL_K + 2]
+
+    return [d for d, _ in pairs], [s for _, s in pairs]
+
+
+# ---------------------------------------------------------------------------
+# LLM calls — non-streaming
+# ---------------------------------------------------------------------------
 
 def _call_llm(provider: str, model_id: str, context_str: str, input_text: str) -> str:
-    user_content = f"Context from philosophical texts:\n{context_str}\n\nQuestion: {input_text}"
+    user_content = (
+        f"Context from philosophical texts:\n{context_str}\n\nQuestion: {input_text}"
+    )
 
     if provider == "google":
         if not GOOGLE_API_KEY:
             env_var, site = PROVIDER_KEYS["google"]
             raise ValueError(f"{env_var} not set. Get a free key at {site}")
-        client = _get_genai_client()
-        response = client.models.generate_content(
+        response = _get_genai_client().models.generate_content(
             model=model_id,
             contents=user_content,
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.3,
+                system_instruction=SYSTEM_PROMPT, temperature=0.3
             ),
         )
         return response.text
@@ -104,15 +167,6 @@ def _call_llm(provider: str, model_id: str, context_str: str, input_text: str) -
             raise ValueError(f"{env_var} not set. Get a free key at {site}")
         from openai import OpenAI
         client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-        resp = client.chat.completions.create(
-            model=model_id,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_content},
-            ],
-            temperature=0.3,
-        )
-        return resp.choices[0].message.content
 
     elif provider == "openrouter":
         if not OPENROUTER_API_KEY:
@@ -124,31 +178,144 @@ def _call_llm(provider: str, model_id: str, context_str: str, input_text: str) -
             base_url="https://openrouter.ai/api/v1",
             default_headers={"HTTP-Referer": "https://github.com/Fikri645/philosopher-chat"},
         )
-        resp = client.chat.completions.create(
+    else:
+        raise ValueError(f"Unknown provider: {provider!r}")
+
+    resp = client.chat.completions.create(
+        model=model_id,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        temperature=0.3,
+    )
+    return resp.choices[0].message.content
+
+
+# ---------------------------------------------------------------------------
+# LLM calls — streaming
+# ---------------------------------------------------------------------------
+
+def stream_llm(
+    provider: str, model_id: str, context_str: str, input_text: str
+) -> Generator[str, None, None]:
+    """Yield text chunks for real-time streaming."""
+    user_content = (
+        f"Context from philosophical texts:\n{context_str}\n\nQuestion: {input_text}"
+    )
+
+    if provider == "google":
+        if not GOOGLE_API_KEY:
+            env_var, site = PROVIDER_KEYS["google"]
+            raise ValueError(f"{env_var} not set. Get a free key at {site}")
+        for chunk in _get_genai_client().models.generate_content_stream(
+            model=model_id,
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT, temperature=0.3
+            ),
+        ):
+            if chunk.text:
+                yield chunk.text
+
+    elif provider in ("groq", "openrouter"):
+        if provider == "groq":
+            if not GROQ_API_KEY:
+                env_var, site = PROVIDER_KEYS["groq"]
+                raise ValueError(f"{env_var} not set. Get a free key at {site}")
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1"
+            )
+        else:
+            if not OPENROUTER_API_KEY:
+                env_var, site = PROVIDER_KEYS["openrouter"]
+                raise ValueError(f"{env_var} not set. Get a free key at {site}")
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=OPENROUTER_API_KEY,
+                base_url="https://openrouter.ai/api/v1",
+                default_headers={
+                    "HTTP-Referer": "https://github.com/Fikri645/philosopher-chat"
+                },
+            )
+        stream = client.chat.completions.create(
             model=model_id,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_content},
+                {"role": "user", "content": user_content},
             ],
             temperature=0.3,
+            stream=True,
         )
-        return resp.choices[0].message.content
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
 
     else:
         raise ValueError(f"Unknown provider: {provider!r}")
 
 
-def query(input_text: str, philosopher: str = "All", llm_label: str = DEFAULT_LLM) -> dict:
+# ---------------------------------------------------------------------------
+# Public query interface
+# ---------------------------------------------------------------------------
+
+def query(
+    input_text: str, philosopher: str = "All", llm_label: str = DEFAULT_LLM
+) -> dict:
+    """Non-streaming query. Returns answer + context + scores."""
     provider, model_id = LLM_OPTIONS.get(llm_label, LLM_OPTIONS[DEFAULT_LLM])
-    retriever = get_retriever(philosopher)
-    docs: list[Document] = retriever.invoke(input_text)
+    docs, scores = retrieve_docs(input_text, philosopher)
     context_str = "\n\n".join(d.page_content for d in docs)
     answer = _call_llm(provider, model_id, context_str, input_text)
-    return {"answer": answer, "context": docs}
+    return {"answer": answer, "context": docs, "scores": scores}
 
+
+# ---------------------------------------------------------------------------
+# UMAP embedding visualization
+# ---------------------------------------------------------------------------
+
+def get_umap_data() -> dict | None:
+    """Compute 2D UMAP projection of all KB embeddings.
+
+    Returns dict ready for plotly, or None if unavailable.
+    """
+    import numpy as np
+
+    try:
+        import umap as umap_module  # type: ignore
+    except ImportError:
+        return None
+
+    if not vectorstore_exists():
+        return None
+
+    result = _get_vectorstore().get(include=["embeddings", "metadatas", "documents"])
+    if not result.get("embeddings"):
+        return None
+
+    embeddings = np.array(result["embeddings"])
+    reducer = umap_module.UMAP(
+        n_components=2, random_state=42, n_neighbors=15, min_dist=0.1
+    )
+    coords = reducer.fit_transform(embeddings)
+
+    return {
+        "x": coords[:, 0].tolist(),
+        "y": coords[:, 1].tolist(),
+        "philosopher": [m.get("philosopher", "Unknown") for m in result["metadatas"]],
+        "title": [m.get("title", "Unknown") for m in result["metadatas"]],
+        "preview": [d[:120].replace("\n", " ") + "…" for d in result["documents"]],
+    }
+
+
+# ---------------------------------------------------------------------------
+# KB management
+# ---------------------------------------------------------------------------
 
 def add_to_kb(file_path: str | Path, author: str, title: str) -> int:
-    """Chunk, embed, and add a file to the existing vectorstore. Returns chunk count."""
+    """Chunk, embed, and add a file to the vectorstore. Returns chunk count."""
     file_path = Path(file_path)
 
     if file_path.suffix.lower() == ".pdf":
@@ -168,7 +335,6 @@ def add_to_kb(file_path: str | Path, author: str, title: str) -> int:
         chunk_overlap=CHUNK_OVERLAP,
         separators=["\n\n", "\n", ". ", " ", ""],
     )
-    chunks = splitter.split_text(text)
     docs = [
         Document(
             page_content=chunk,
@@ -178,12 +344,9 @@ def add_to_kb(file_path: str | Path, author: str, title: str) -> int:
                 "source": f"{author.strip()} — *{title.strip()}*",
             },
         )
-        for chunk in chunks
+        for chunk in splitter.split_text(text)
     ]
 
     _get_vectorstore().add_documents(docs)
+    _get_bm25_retriever.cache_clear()  # invalidate BM25 index after KB change
     return len(docs)
-
-
-def vectorstore_exists() -> bool:
-    return (VECTORSTORE_DIR / "chroma.sqlite3").exists()

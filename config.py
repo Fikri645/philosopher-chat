@@ -65,9 +65,10 @@ EMBEDDING_MODEL   = EMBEDDING_OPTIONS[DEFAULT_EMBEDDING]
 # ---------------------------------------------------------------------------
 # RAG
 # ---------------------------------------------------------------------------
-CHUNK_SIZE    = 1000
-CHUNK_OVERLAP = 150
-RETRIEVAL_K   = 5
+CHUNK_SIZE        = 1000
+CHUNK_OVERLAP     = 150
+RETRIEVAL_K       = 6       # slightly more to absorb BM25 extras
+USE_HYBRID_SEARCH = True    # BM25 + semantic ensemble
 
 # ---------------------------------------------------------------------------
 # Knowledge base sources (Project Gutenberg)

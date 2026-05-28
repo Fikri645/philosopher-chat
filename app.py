@@ -1,25 +1,84 @@
+import time
+
 import gradio as gr
+import plotly.express as px
+import pandas as pd
+
 from rag_chain import (
-    query, add_to_kb, vectorstore_exists,
-    get_all_philosophers, get_kb_stats
+    retrieve_docs, stream_llm, query, add_to_kb, vectorstore_exists,
+    get_all_philosophers, get_kb_stats, get_umap_data,
 )
 from config import LLM_OPTIONS, DEFAULT_LLM, EMBEDDING_OPTIONS, DEFAULT_EMBEDDING
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Display helpers
 # ---------------------------------------------------------------------------
 
-def _format_sources(context_docs: list) -> str:
-    if not context_docs:
+_PROVIDER_COLOR = {
+    "Google": "#4285F4",
+    "Groq":   "#FF4B36",
+    "OpenRouter": "#6366F1",
+}
+
+_COMPARE_DEFAULT_B = "Llama 4 Scout 17B  [Groq]"
+
+
+def _score_bar(score: float, width: int = 10) -> str:
+    filled = max(0, min(width, round(score * width)))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _format_sources(docs: list, scores: list[float]) -> str:
+    if not docs:
         return ""
     seen: set = set()
-    lines: list = []
-    for doc in context_docs:
+    lines: list[str] = []
+    for doc, score in zip(docs, scores):
         key = doc.metadata.get("source", "Unknown source")
         if key not in seen:
             seen.add(key)
-            lines.append(f"- {key}")
+            tag = f"`{score:.2f}` " if score >= 0 else "`BM25` "
+            lines.append(f"- {tag}{key}")
     return "\n\n---\n**Sources:**\n" + "\n".join(lines)
+
+
+def _format_retrieved_chunks(docs: list, scores: list[float]) -> str:
+    if not docs:
+        return "_No chunks retrieved._"
+
+    semantic_scores = [s for s in scores if s >= 0]
+    avg = sum(semantic_scores) / len(semantic_scores) if semantic_scores else 0.0
+    has_bm25 = any(s < 0 for s in scores)
+    method = "Hybrid BM25 + Semantic" if has_bm25 else "Semantic"
+
+    lines = [
+        f"**{len(docs)} chunks** &nbsp;·&nbsp; {method}"
+        f" &nbsp;·&nbsp; avg similarity: **{avg:.3f}**\n"
+    ]
+    for i, (doc, score) in enumerate(zip(docs, scores), 1):
+        phil  = doc.metadata.get("philosopher", "?")
+        title = doc.metadata.get("title", "?")
+        if score >= 0:
+            tag = f"`{score:.3f}` {_score_bar(score)}"
+        else:
+            tag = "`BM25 ` ──────────"
+        text = doc.page_content[:200].replace("\n", " ").strip()
+        lines.append(
+            f"**{i}.** {tag} &nbsp; *{phil}* · {title}  \n"
+            f"&nbsp;&nbsp;&nbsp;&nbsp;*\"{text}...\"*\n"
+        )
+    return "\n".join(lines)
+
+
+def _format_metrics(
+    retrieve_s: float, llm_s: float, n_docs: int, n_sources: int
+) -> str:
+    return (
+        f"⏱ &nbsp;Retrieval **{retrieve_s:.2f}s** &nbsp;·&nbsp; "
+        f"LLM **{llm_s:.2f}s** &nbsp;·&nbsp; "
+        f"Total **{retrieve_s + llm_s:.2f}s** &nbsp;·&nbsp; "
+        f"**{n_docs}** chunks from **{n_sources}** source(s)"
+    )
 
 
 def _kb_markdown() -> str:
@@ -39,23 +98,72 @@ def _kb_markdown() -> str:
 # Event handlers
 # ---------------------------------------------------------------------------
 
-def respond(message: str, history: list, philosopher: str, llm_label: str):
+def respond_stream(message: str, history: list, philosopher: str, llm_label: str):
     if not message.strip():
-        return history, ""
+        yield history, "", gr.update(), gr.update()
+        return
 
     if not vectorstore_exists():
-        error = "Knowledge base not found. Run `python ingest.py` first."
-        return history + [{"role": "assistant", "content": error}], ""
+        err = "Knowledge base not found. Run `python ingest.py` first."
+        yield history + [{"role": "assistant", "content": err}], "", gr.update(), gr.update()
+        return
 
-    result = query(message, philosopher, llm_label)
-    answer = result.get("answer", "No answer generated.")
-    sources = _format_sources(result.get("context", []))
+    # — Retrieval (fast, happens before streaming) —
+    t0 = time.perf_counter()
+    docs, scores = retrieve_docs(message, philosopher)
+    retrieve_time = time.perf_counter() - t0
+    context_str = "\n\n".join(d.page_content for d in docs)
+
+    chunks_md = _format_retrieved_chunks(docs, scores)
 
     history = history + [
         {"role": "user",      "content": message},
-        {"role": "assistant", "content": answer + sources},
+        {"role": "assistant", "content": ""},
     ]
-    return history, ""
+
+    provider, model_id = LLM_OPTIONS.get(llm_label, LLM_OPTIONS[DEFAULT_LLM])
+    t1 = time.perf_counter()
+    try:
+        for text_chunk in stream_llm(provider, model_id, context_str, message):
+            history[-1]["content"] += text_chunk
+            yield history, "", gr.update(value=chunks_md), gr.update()
+
+        llm_time = time.perf_counter() - t1
+        unique_sources = len({d.metadata.get("source") for d in docs})
+        metrics_md = _format_metrics(retrieve_time, llm_time, len(docs), unique_sources)
+
+        history[-1]["content"] += _format_sources(docs, scores)
+        yield history, "", gr.update(value=chunks_md), gr.update(value=metrics_md)
+
+    except Exception as exc:
+        history[-1]["content"] = f"⚠️ **Error:** {exc}"
+        yield history, "", gr.update(value=chunks_md), gr.update()
+
+
+def compare_respond(message: str, philosopher: str, llm_a: str, llm_b: str):
+    if not message.strip():
+        return "Enter a question above.", "", "Enter a question above.", ""
+    if not vectorstore_exists():
+        msg = "Knowledge base not found."
+        return msg, "", msg, ""
+
+    def _run(llm_label: str) -> tuple[str, str]:
+        t0 = time.perf_counter()
+        result = query(message, philosopher, llm_label)
+        elapsed = time.perf_counter() - t0
+        n_src = len({d.metadata.get("source") for d in result["context"]})
+        sem_scores = [s for s in result["scores"] if s >= 0]
+        avg = sum(sem_scores) / len(sem_scores) if sem_scores else 0.0
+        metrics = (
+            f"⏱ **{elapsed:.2f}s** &nbsp;·&nbsp; "
+            f"**{len(result['context'])}** chunks from **{n_src}** source(s)"
+            f" &nbsp;·&nbsp; avg similarity **{avg:.3f}**"
+        )
+        return result["answer"], metrics
+
+    ans_a, met_a = _run(llm_a)
+    ans_b, met_b = _run(llm_b)
+    return ans_a, met_a, ans_b, met_b
 
 
 def upload_source(file, author: str, title: str):
@@ -63,13 +171,11 @@ def upload_source(file, author: str, title: str):
         return gr.update(value="Please upload a file first."), gr.update()
     if not author.strip() or not title.strip():
         return gr.update(value="Please fill in both Author and Title."), gr.update()
-
     try:
         n = add_to_kb(file, author.strip(), title.strip())
         msg = f"Added {n:,} chunks from *{title}* by {author}."
     except Exception as e:
         msg = f"Error: {e}"
-
     return (
         gr.update(value=msg),
         gr.update(choices=get_all_philosophers(), value="All"),
@@ -80,17 +186,32 @@ def refresh_kb():
     return gr.update(value=_kb_markdown())
 
 
+def build_umap_plot():
+    data = get_umap_data()
+    if data is None:
+        return None
+    df = pd.DataFrame(data)
+    fig = px.scatter(
+        df, x="x", y="y",
+        color="philosopher",
+        hover_data={"title": True, "preview": True, "x": False, "y": False},
+        title="Knowledge Base — Semantic Embedding Space (UMAP 2D projection)",
+        labels={"x": "UMAP-1", "y": "UMAP-2"},
+        opacity=0.65,
+    )
+    fig.update_traces(marker=dict(size=4))
+    fig.update_layout(
+        height=520,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+    )
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-
-CUSTOM_CSS = """
-.sidebar { background: var(--block-background-fill); }
-.section-header { font-size: 0.85rem; font-weight: 600; color: var(--body-text-color-subdued);
-                  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
-.status-box textarea { font-size: 0.82rem !important; color: var(--body-text-color-subdued) !important; }
-footer { display: none !important; }
-"""
 
 EXAMPLE_QUESTIONS = [
     "What is Nietzsche's view on nihilism and the death of God?",
@@ -107,102 +228,201 @@ EXAMPLE_QUESTIONS = [
     "What does Epictetus say about what is in our control?",
 ]
 
+CSS = """
+footer { display: none !important; }
+.section-label {
+    font-size: 0.78rem; font-weight: 700; letter-spacing: 0.07em;
+    text-transform: uppercase; color: var(--body-text-color-subdued);
+    margin-bottom: 2px;
+}
+.metric-bar p { font-size: 0.82rem; color: var(--body-text-color-subdued); margin: 4px 0; }
+.status-box textarea { font-size: 0.82rem !important; }
+"""
+
 with gr.Blocks(title="Philosopher Chat") as demo:
 
-    # --- Header ---
     gr.Markdown(
         """
 # 📚 Philosopher Chat
-### A RAG chatbot grounded in Western philosophical primary texts
-Ask questions about nihilism, epistemology, ethics, and existence — answers are retrieved
-directly from the original works of Nietzsche, Schopenhauer, Hume, Russell, and more.
+**RAG chatbot grounded in Western philosophical primary texts**
+
+Hybrid BM25 + Semantic retrieval &nbsp;·&nbsp; Real-time streaming
+&nbsp;·&nbsp; Multi-provider LLM routing &nbsp;·&nbsp; 12 primary texts · ~5 700 chunks
         """
     )
 
-    with gr.Row(equal_height=False):
+    with gr.Tabs():
 
-        # ── Left: Chat ──────────────────────────────────────────────────
-        with gr.Column(scale=3):
-            chatbot_ui = gr.Chatbot(
-                height=520,
-                show_label=False,
-                placeholder="*Ask a philosophical question to get started...*",
+        # ── Tab 1 ─ Chat ─────────────────────────────────────────────────
+        with gr.Tab("💬 Chat"):
+            with gr.Row(equal_height=False):
+
+                # Left: chat area
+                with gr.Column(scale=3):
+                    chatbot_ui = gr.Chatbot(
+                        height=480,
+                        show_label=False,
+                        placeholder="*Ask a philosophical question to get started...*",
+                    )
+                    msg_input = gr.Textbox(
+                        placeholder="Ask a philosophical question…",
+                        show_label=False,
+                        autofocus=True,
+                        submit_btn=True,
+                    )
+                    metrics_display = gr.Markdown(
+                        value="", elem_classes="metric-bar"
+                    )
+                    with gr.Accordion("📄 Retrieved Chunks & Scores", open=False):
+                        retrieved_display = gr.Markdown(
+                            value="_Submit a question to see retrieved context._"
+                        )
+                    with gr.Accordion("💡 Example Questions", open=False):
+                        gr.Examples(
+                            examples=[[q] for q in EXAMPLE_QUESTIONS],
+                            inputs=[msg_input],
+                            label=None,
+                        )
+
+                # Right: settings sidebar
+                with gr.Column(scale=1, min_width=240):
+                    with gr.Group():
+                        gr.Markdown("**⚙️ Chat Settings**", elem_classes="section-label")
+                        llm_dropdown = gr.Dropdown(
+                            choices=list(LLM_OPTIONS.keys()),
+                            value=DEFAULT_LLM,
+                            label="LLM Model",
+                        )
+                        embedding_display = gr.Dropdown(
+                            choices=list(EMBEDDING_OPTIONS.keys()),
+                            value=DEFAULT_EMBEDDING,
+                            label="Embedding Model",
+                            info="Change requires rebuilding index (ingest.py)",
+                            interactive=False,
+                        )
+                        philosopher_filter = gr.Dropdown(
+                            choices=get_all_philosophers(),
+                            value="All",
+                            label="Filter by Philosopher",
+                        )
+
+                    with gr.Group():
+                        gr.Markdown("**ℹ️ Stack**", elem_classes="section-label")
+                        gr.Markdown(
+                            "- Retrieval: **Hybrid BM25 + Semantic**\n"
+                            "- Embeddings: **EmbeddingGemma-300M**\n"
+                            "- Vector DB: **ChromaDB**\n"
+                            "- Framework: **LangChain LCEL**\n"
+                            "- UI: **Gradio 6**"
+                        )
+
+        # ── Tab 2 ─ Compare Models ───────────────────────────────────────
+        with gr.Tab("⚖️ Compare Models"):
+            gr.Markdown(
+                "Run the same question through two models and compare quality, "
+                "latency, and retrieval coverage side by side."
             )
-
             with gr.Row():
-                msg_input = gr.Textbox(
-                    placeholder="Ask a philosophical question...",
-                    show_label=False,
-                    scale=5,
-                    autofocus=True,
-                    submit_btn=True,
+                compare_input = gr.Textbox(
+                    label="Question",
+                    placeholder="Ask a philosophical question…",
+                    scale=4,
                 )
-
-            with gr.Accordion("Example Questions", open=False):
-                gr.Examples(
-                    examples=[[q] for q in EXAMPLE_QUESTIONS],
-                    inputs=[msg_input],
-                    label=None,
-                )
-
-        # ── Right: Sidebar ───────────────────────────────────────────────
-        with gr.Column(scale=1, min_width=260):
-
-            # Chat settings
-            with gr.Group():
-                gr.Markdown("**⚙️ Chat Settings**", elem_classes="section-header")
-                llm_dropdown = gr.Dropdown(
-                    choices=list(LLM_OPTIONS.keys()),
-                    value=DEFAULT_LLM,
-                    label="LLM Model",
-                )
-                embedding_display = gr.Dropdown(
-                    choices=list(EMBEDDING_OPTIONS.keys()),
-                    value=DEFAULT_EMBEDDING,
-                    label="Embedding Model",
-                    info="Changing requires rebuilding the index with ingest.py",
-                    interactive=False,
-                )
-                philosopher_filter = gr.Dropdown(
+                compare_philosopher = gr.Dropdown(
                     choices=get_all_philosophers(),
                     value="All",
-                    label="Filter by Philosopher",
+                    label="Philosopher Filter",
+                    scale=1,
                 )
+            compare_btn = gr.Button("▶ Compare", variant="primary")
 
-            # Upload
-            with gr.Group():
-                gr.Markdown("**📤 Add Source**", elem_classes="section-header")
-                file_upload = gr.File(
-                    label="Upload PDF or TXT",
-                    file_types=[".pdf", ".txt"],
-                )
-                with gr.Row():
-                    author_input = gr.Textbox(label="Author / Philosopher", scale=1)
-                    title_input  = gr.Textbox(label="Work Title", scale=1)
-                upload_btn = gr.Button("Add to Knowledge Base", variant="secondary", size="sm")
-                upload_status = gr.Textbox(
-                    show_label=False,
-                    interactive=False,
-                    placeholder="Upload status will appear here...",
-                    elem_classes="status-box",
-                )
-
-            # Knowledge base overview
-            with gr.Group():
-                with gr.Row():
-                    gr.Markdown("**📚 Knowledge Base**", elem_classes="section-header")
-                    gr.Button("↻", size="sm", min_width=32).click(
-                        refresh_kb, outputs=gr.Markdown()
+            with gr.Row():
+                with gr.Column():
+                    model_a = gr.Dropdown(
+                        choices=list(LLM_OPTIONS.keys()),
+                        value=DEFAULT_LLM,
+                        label="Model A",
                     )
-                kb_display = gr.Markdown(_kb_markdown())
+                    response_a = gr.Markdown(label="Response A")
+                    metrics_a  = gr.Markdown(elem_classes="metric-bar")
 
-    # --- Wire events ---
+                with gr.Column():
+                    model_b = gr.Dropdown(
+                        choices=list(LLM_OPTIONS.keys()),
+                        value=_COMPARE_DEFAULT_B,
+                        label="Model B",
+                    )
+                    response_b = gr.Markdown(label="Response B")
+                    metrics_b  = gr.Markdown(elem_classes="metric-bar")
+
+        # ── Tab 3 ─ Knowledge Base ───────────────────────────────────────
+        with gr.Tab("🗺️ Knowledge Base"):
+            with gr.Row(equal_height=False):
+
+                # Left: UMAP visualization
+                with gr.Column(scale=2):
+                    gr.Markdown(
+                        "**Semantic Embedding Space**  \n"
+                        "Each point is one text chunk. Clusters indicate semantic similarity — "
+                        "nearby chunks share philosophical themes regardless of source."
+                    )
+                    umap_plot = gr.Plot()
+                    umap_btn  = gr.Button(
+                        "Generate Embedding Visualization", variant="secondary"
+                    )
+                    gr.Markdown(
+                        "_UMAP projects ~5,700 × 768-dim embeddings to 2D. "
+                        "First run takes ~1–2 min on CPU._"
+                    )
+
+                # Right: stats + upload
+                with gr.Column(scale=1, min_width=280):
+                    with gr.Group():
+                        with gr.Row():
+                            gr.Markdown(
+                                "**📚 Knowledge Base**", elem_classes="section-label"
+                            )
+                            refresh_kb_btn = gr.Button("↻", size="sm", min_width=32)
+                        kb_display = gr.Markdown(_kb_markdown())
+
+                    with gr.Group():
+                        gr.Markdown(
+                            "**📤 Add Source**", elem_classes="section-label"
+                        )
+                        file_upload = gr.File(
+                            label="Upload PDF or TXT",
+                            file_types=[".pdf", ".txt"],
+                        )
+                        with gr.Row():
+                            author_input = gr.Textbox(label="Author", scale=1)
+                            title_input  = gr.Textbox(label="Title",  scale=1)
+                        upload_btn = gr.Button(
+                            "Add to Knowledge Base", variant="secondary", size="sm"
+                        )
+                        upload_status = gr.Textbox(
+                            show_label=False,
+                            interactive=False,
+                            placeholder="Upload status will appear here…",
+                            elem_classes="status-box",
+                        )
+
+    # ── Event wiring ─────────────────────────────────────────────────────
 
     msg_input.submit(
-        respond,
+        respond_stream,
         inputs=[msg_input, chatbot_ui, philosopher_filter, llm_dropdown],
-        outputs=[chatbot_ui, msg_input],
+        outputs=[chatbot_ui, msg_input, retrieved_display, metrics_display],
     )
+
+    compare_btn.click(
+        compare_respond,
+        inputs=[compare_input, compare_philosopher, model_a, model_b],
+        outputs=[response_a, metrics_a, response_b, metrics_b],
+    )
+
+    umap_btn.click(build_umap_plot, outputs=umap_plot)
+
+    refresh_kb_btn.click(refresh_kb, outputs=kb_display)
 
     upload_btn.click(
         upload_source,
@@ -212,4 +432,4 @@ directly from the original works of Nietzsche, Schopenhauer, Hume, Russell, and 
 
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(css=CSS)
