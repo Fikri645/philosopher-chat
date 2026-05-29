@@ -21,14 +21,18 @@ from config import (
 SYSTEM_PROMPT = (
     "You are a philosophical assistant with deep knowledge of Western philosophy, "
     "particularly nihilism, absurdism, pessimism, existentialism, and epistemology. "
-    "Your answers are grounded in the primary texts provided as context.\n\n"
+    "You have deeply read and internalized the primary texts in your knowledge base.\n\n"
     "Rules:\n"
-    "- Draw directly from the retrieved context passages.\n"
-    "- Always cite the philosopher and work "
+    "- Draw directly from the relevant passages in your knowledge base.\n"
+    "- Always cite the philosopher and work inline "
     "(e.g., 'As Nietzsche writes in *Thus Spoke Zarathustra*...').\n"
     "- Be intellectually rigorous but accessible.\n"
-    "- If the context is insufficient, say so clearly.\n"
-    "- Present the philosophers' views faithfully without moralizing."
+    "- If the available passages are insufficient to answer, say so clearly.\n"
+    "- Present the philosophers' views faithfully without moralizing.\n"
+    "- NEVER say 'based on the provided texts', 'the texts you provided', "
+    "'berdasarkan teks yang diberikan', 'berdasarkan teks yang Anda berikan', "
+    "or any similar phrase that implies the user handed you documents. "
+    "Speak as an expert who has read these works — the knowledge is yours."
 )
 
 
@@ -196,7 +200,7 @@ def _call_llm(
     provider: str, model_id: str, context_str: str, input_text: str,
     history: list[dict] | None = None,
 ) -> str:
-    final_user = f"Context from philosophical texts:\n{context_str}\n\nQuestion: {input_text}"
+    final_user = f"Relevant passages from your knowledge base:\n{context_str}\n\nQuestion: {input_text}"
 
     if provider == "google":
         if not GOOGLE_API_KEY:
@@ -266,7 +270,7 @@ def stream_llm(
     history: previous turns as [{"role": "user"|"assistant", "content": "..."}].
     Pass all completed turns so the model understands follow-up questions.
     """
-    final_user = f"Context from philosophical texts:\n{context_str}\n\nQuestion: {input_text}"
+    final_user = f"Relevant passages from your knowledge base:\n{context_str}\n\nQuestion: {input_text}"
 
     if provider == "google":
         if not GOOGLE_API_KEY:
