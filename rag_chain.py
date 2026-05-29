@@ -1,4 +1,5 @@
 import re
+import warnings
 from functools import lru_cache
 from pathlib import Path
 from typing import Generator
@@ -164,7 +165,9 @@ def retrieve_docs(
     if philosopher != "All":
         search_kwargs["filter"] = {"philosopher": philosopher}
 
-    pairs = vectorstore.similarity_search_with_relevance_scores(input_text, **search_kwargs)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Relevance scores must be between")
+        pairs = vectorstore.similarity_search_with_relevance_scores(input_text, **search_kwargs)
 
     if USE_HYBRID_SEARCH and philosopher == "All":
         try:
