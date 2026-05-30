@@ -102,17 +102,21 @@ answers for a curated question set with reference answers across a **3-stage abl
 **📊 Evaluation** tab; full analysis in the
 [evaluation notebook](notebooks/rag_evaluation.ipynb).
 
-### Each component earns its place (12 questions, LLM-as-judge)
+### Measuring each component (12 questions, LLM-as-judge)
 
-| Metric | Baseline (Hybrid) | + Reranker | + Query Rewrite | Δ |
+| Metric | Baseline (Hybrid) | + Reranker | + Query Rewrite | Δ (full) |
 |---|:---:|:---:|:---:|:---:|
-| **Faithfulness** | 0.36 | 0.42 | 0.46 | **+0.10** |
-| **Answer Relevancy** | 0.87 | 0.90 | 0.91 | **+0.04** |
-| **Context Precision** | 0.92 | 0.95 | 0.97 | **+0.05** |
-| **Context Recall** | 0.24 | 0.31 | 0.38 | **+0.13** |
+| **Faithfulness** | 0.40 | 0.44 | 0.43 | +0.03 |
+| **Answer Relevancy** | 0.94 | 0.90 | 0.91 | −0.03 |
+| **Context Precision** | 1.00 | 1.00 | 0.99 | −0.01 |
+| **Context Recall** | 0.38 | 0.51 | 0.43 | +0.06 |
 
-Every metric improves monotonically as components are added — Context Recall most
-(+0.13, ~+55%). Two-phase eval (generation, then judging) keeps it reproducible:
+**The reranker is the clear win** — Context Recall jumps +0.14 (0.38 → 0.51) and
+Faithfulness rises, with no real cost elsewhere. **Query rewriting did *not* help
+this corpus** — it slightly *reduced* recall (0.51 → 0.43) and relevancy. That is the
+point of measuring: the data says ship the reranker and treat query rewriting as
+corpus-dependent rather than assuming more components are always better. Two-phase
+eval (generation, then judging) keeps it reproducible:
 
 ```bash
 pip install -r requirements.txt
