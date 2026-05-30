@@ -49,31 +49,29 @@ if "langchain_community.chat_models.vertexai" not in sys.modules:
     sys.modules["langchain_community.chat_models.vertexai"] = _vx
 
 import numpy as np  # noqa: E402
-from langchain_openai import ChatOpenAI  # noqa: E402
-from ragas import SingleTurnSample  # noqa: E402
-from ragas.embeddings import LangchainEmbeddingsWrapper  # noqa: E402
-from ragas.llms import LangchainLLMWrapper  # noqa: E402
-from ragas.metrics import (  # noqa: E402
-    Faithfulness,
-    LLMContextPrecisionWithReference,
-    LLMContextRecall,
-    ResponseRelevancy,
-)
+
+# NOTE: ragas / langchain_openai are imported lazily inside the judging path
+# only. The ``--generate`` phase (torch: embedder + reranker + Chroma) then runs
+# with exactly the app's import surface — importing the heavy ragas stack
+# alongside torch was triggering a native segfault on this Windows / Python 3.14
+# box. Generation and judging are therefore split into two processes.
 
 import rag_chain  # noqa: E402
-from config import GROQ_API_KEY, RERANKER_MODEL, RETRIEVAL_FETCH_K  # noqa: E402
+from config import GOOGLE_API_KEY, RERANKER_MODEL, RETRIEVAL_FETCH_K  # noqa: E402
 
 # NOTE: RAGAS's batch ``evaluate()`` uses an async executor whose per-job
 # ``asyncio.timeout`` is incompatible with Python 3.14's asyncio. We instead
 # call each metric's synchronous ``single_turn_score`` in a plain loop — same
 # RAGAS metric implementations and prompts, just driven sequentially.
 
-# Judge model — Groq Llama 3.1 8B: a plain-text instruction follower (Gemma's
-# thinking mode breaks RAGAS' JSON parsing; Gemini Flash has too few free RPD).
-# Groq's 6000 TPM cap means the judge self-throttles via 429 retries.
-JUDGE_MODEL = "llama-3.1-8b-instant"
-# Answer generation runs on Google Gemma (unlimited TPM) so it doesn't consume
-# the judge's scarce Groq token budget — only the judging is rate-limited.
+# Judge — Gemini 3.1 Flash Lite via Google's OpenAI-compatible endpoint (httpx,
+# NOT the grpc client, which segfaults alongside torch on Python 3.14). 500 RPD
+# / 250K TPM gives headroom for a full 12-question A/B. (Groq free tiers proved
+# too token-limited; Gemma's thinking mode breaks RAGAS JSON parsing.)
+JUDGE_MODEL = "gemini-3.1-flash-lite"
+GOOGLE_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
+# Answer generation runs on Google Gemma (the app's default model) — a separate
+# rate-limit bucket from the judge.
 GEN_LLM_LABEL = "Gemma 4 MoE 26B  [Google]"
 RESULTS_PATH = rag_chain.VECTORSTORE_DIR.parent / "eval_results.json"
 
@@ -208,24 +206,24 @@ EVAL_SET: list[dict] = [
 # RAGAS plumbing
 # ---------------------------------------------------------------------------
 
-def _build_judge() -> LangchainLLMWrapper:
+def _build_judge():
+    from langchain_openai import ChatOpenAI
+    from ragas.llms import LangchainLLMWrapper
     llm = ChatOpenAI(
         model=JUDGE_MODEL,
-        api_key=GROQ_API_KEY,
-        base_url="https://api.groq.com/openai/v1",
+        api_key=GOOGLE_API_KEY,
+        base_url=GOOGLE_OPENAI_BASE,
         temperature=0.0,
-        max_tokens=3000,   # faithfulness decomposes long answers into many
-                           # statements — needs headroom or output truncates
-        timeout=120,
-        max_retries=6,     # absorb Groq 6000-TPM 429s with backoff
+        max_tokens=3000,
+        timeout=90,
+        max_retries=4,       # absorb the occasional 15-RPM 429
     )
     return LangchainLLMWrapper(llm)
 
 
-# Groq free tier allows only ~6000 tokens/min. RAGAS fires several
-# context-heavy calls per sample, so we pace between metrics to stay under the
-# rolling bucket and avoid cascading 429 retries.
-PACE_SECONDS = 12
+# Gemini 3.1 Flash Lite allows 15 RPM. A short pace between metrics keeps
+# multi-call metrics under the per-minute request limit.
+PACE_SECONDS = 5
 
 
 def _score_sample(sample: SingleTurnSample, scorers: dict) -> dict[str, float | None]:
@@ -243,11 +241,35 @@ def _score_sample(sample: SingleTurnSample, scorers: dict) -> dict[str, float | 
     return out
 
 
+# Generate with Gemma via Google's OpenAI-compatible endpoint (httpx). The
+# native google.genai client uses grpc, which segfaults alongside torch on this
+# Python 3.14 box — so we keep generation on the same httpx path as the judge.
+GEN_MODEL_ID = "gemma-4-26b-a4b-it"
+
+
+def _generate(question: str) -> dict:
+    docs, _ = rag_chain.retrieve_docs(question, "All")  # torch retrieval (no grpc)
+    context_str = "\n\n".join(d.page_content for d in docs)
+    from openai import OpenAI
+    client = OpenAI(api_key=GOOGLE_API_KEY, base_url=GOOGLE_OPENAI_BASE)
+    user = (f"Relevant passages from your knowledge base:\n{context_str}\n\n"
+            f"Question: {question}")
+    resp = client.chat.completions.create(
+        model=GEN_MODEL_ID,
+        messages=[
+            {"role": "system", "content": rag_chain.SYSTEM_PROMPT},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.3,
+    )
+    return {"answer": resp.choices[0].message.content, "context": docs}
+
+
 def _generate_with_retry(question: str, retries: int = 5):
     """RAG answer generation with backoff on Google RPM (429) limits."""
     for attempt in range(retries):
         try:
-            return rag_chain.query(question, "All", GEN_LLM_LABEL)
+            return _generate(question)
         except Exception as exc:
             if attempt == retries - 1:
                 raise
@@ -257,6 +279,7 @@ def _generate_with_retry(question: str, retries: int = 5):
 
 
 def run_config(name: str, use_reranker: bool, eval_set: list[dict], scorers: dict) -> dict:
+    from ragas import SingleTurnSample
     rag_chain.USE_RERANKER = use_reranker  # runtime toggle (see retrieve_docs)
     print(f"\n=== {name}  (reranker={'ON' if use_reranker else 'OFF'}) ===")
     per_question = []
@@ -284,17 +307,69 @@ def run_config(name: str, use_reranker: bool, eval_set: list[dict], scorers: dic
     return {"aggregate": agg, "per_question": per_question}
 
 
+SAMPLES_PATH = rag_chain.VECTORSTORE_DIR.parent / "eval_samples.json"
+
+CONFIGS = [
+    ("Baseline (Hybrid, no rerank)", False),
+    ("With Cross-Encoder Rerank", True),
+]
+
+
+def generate_samples(eval_set: list[dict]) -> dict:
+    """Phase A: run the real RAG pipeline (retrieval + generation) for every
+    question under both configs and dump the samples. No LLM judging here, so
+    no rate limits and no torch+judge segfault — the judging is a separate phase.
+    """
+    out: dict[str, list[dict]] = {}
+    for cfg_name, use_rr in CONFIGS:
+        rag_chain.USE_RERANKER = use_rr
+        print(f"\n=== Generating: {cfg_name}  (reranker={'ON' if use_rr else 'OFF'}) ===")
+        rows = []
+        for i, item in enumerate(eval_set, 1):
+            res = _generate_with_retry(item["question"])
+            rows.append({
+                "question": item["question"],
+                "reference": item["reference"],
+                "answer": res["answer"],
+                "contexts": [d.page_content for d in res["context"]],
+            })
+            print(f"  [{i}/{len(eval_set)}] {item['question'][:55]}")
+        out[cfg_name] = rows
+    return out
+
+
 def main() -> None:
     quick = "--quick" in sys.argv
     full = "--full" in sys.argv
+
+    if "--generate" in sys.argv:
+        eval_set = EVAL_SET[:4] if quick else EVAL_SET
+        samples = {
+            "metadata": {
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "gen_model": GEN_LLM_LABEL,
+                "reranker_model": RERANKER_MODEL,
+                "fetch_k": RETRIEVAL_FETCH_K,
+                "n_questions": len(eval_set),
+            },
+            "samples": generate_samples(eval_set),
+        }
+        SAMPLES_PATH.write_text(json.dumps(samples, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"\nSaved {len(eval_set)} questions x {len(CONFIGS)} configs → {SAMPLES_PATH}")
+        return
     # Default to 6 questions: RAGAS is token-heavy and Groq free tier is
     # 6000 TPM, so a full 12-question A/B (~24 samples) is ~70 min. Six
     # questions × 2 configs is a representative, completable run (~30 min).
     eval_set = EVAL_SET[:4] if quick else (EVAL_SET if full else EVAL_SET[:6])
 
-    if not GROQ_API_KEY:
-        raise SystemExit("GROQ_API_KEY not set — needed for the judge model.")
+    if not GOOGLE_API_KEY:
+        raise SystemExit("GOOGLE_API_KEY not set — needed for the judge model.")
 
+    from ragas.embeddings import LangchainEmbeddingsWrapper
+    from ragas.metrics import (
+        Faithfulness, LLMContextPrecisionWithReference,
+        LLMContextRecall, ResponseRelevancy,
+    )
     judge = _build_judge()
     embeddings = LangchainEmbeddingsWrapper(rag_chain._get_embeddings())
     scorers = {

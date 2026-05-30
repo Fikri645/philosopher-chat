@@ -9,3 +9,6 @@ data/
 .pytest_cache/
 
 eval_run.log
+gen.log
+iso.log
+eval_samples.json
