@@ -24,8 +24,10 @@ cited directly from 12 primary texts (~5,700 chunks).
 
 | Feature | Detail |
 |---|---|
-| **Two-stage retrieval** | Hybrid (dense + BM25) fused with RRF → cross-encoder reranking |
-| **RAGAS evaluation** | 4 metrics measured with/without reranking — reranking quantified, not assumed |
+| **Query rewriting** | Multi-query expansion (LLM paraphrases) fused with RRF for better recall |
+| **Two-stage retrieval** | Hybrid (dense + BM25) → RRF → cross-encoder reranking |
+| **Corrective RAG** | Abstains when retrieval confidence is low instead of hallucinating |
+| **RAGAS evaluation** | 4 metrics, 3-stage ablation — each component quantified, not assumed |
 | **Streaming** | Token-by-token via Google / Groq / OpenRouter |
 | **15 LLMs** | Gemma 4, Gemini, Llama 4, Qwen3, DeepSeek, Nemotron — all free tier |
 | **Think blocks** | Qwen3 / DeepSeek reasoning rendered as collapsible chains-of-thought |
@@ -59,8 +61,10 @@ All texts are public domain, sourced from [Project Gutenberg](https://www.gutenb
 |---|---|
 | LLM routing | 15 models via Google AI Studio, Groq, OpenRouter (all free tier) |
 | Embeddings | `google/embeddinggemma-300m` (HuggingFace, 768-dim) |
+| Query transform | Multi-query rewriting (LLM paraphrases → RRF) |
 | Retrieval | Hybrid (dense + BM25) → RRF fusion → cross-encoder rerank |
 | Reranker | `BAAI/bge-reranker-v2-m3` (multilingual cross-encoder) |
+| Guardrail | Corrective RAG — cosine-gated abstention on out-of-corpus queries |
 | Evaluation | RAGAS metrics (faithfulness, relevancy, context precision/recall) |
 | RAG Framework | LangChain LCEL (no chains, direct composition) |
 | UI | Gradio 6 |
@@ -73,37 +77,49 @@ All texts are public domain, sourced from [Project Gutenberg](https://www.gutenb
 ```
 Question
    │
-   ├─ Dense retrieval   (EmbeddingGemma-300M → ChromaDB cosine)  ─┐
-   ├─ Sparse retrieval  (BM25 / rank-bm25)                        ├─ RRF fusion → top-20 pool
-   │                                                             ─┘
+   ├─ Query rewriting   (LLM → original + paraphrases)            ─┐
+   │     each variant ↓                                            │
+   ├─ Dense retrieval   (EmbeddingGemma-300M → ChromaDB cosine)    ├─ RRF fusion → top-20 pool
+   ├─ Sparse retrieval  (BM25 / rank-bm25)                        ─┘
+   │
    ├─ Cross-encoder rerank  (BGE-reranker-v2-m3) → top-6
+   │
+   ├─ Corrective gate  (cosine < threshold → abstain)
    │
    └─ LLM answer  (grounded + cited from top-6 chunks)
 ```
 
-Two-stage retrieval is the modern production pattern: cheap recall first (hybrid), then
-a precise but expensive cross-encoder reranks the small candidate pool. The reranker
-scores each `(query, chunk)` pair jointly rather than comparing pre-computed vectors.
+The pattern follows modern production RAG: cheap recall first (multi-query hybrid),
+a precise cross-encoder rerank of the small pool, and an abstention gate so
+out-of-corpus questions get an honest "I don't know" instead of a hallucination.
 
 ## Evaluation
 
-The pipeline is measured, not assumed. [`evaluate.py`](evaluate.py) runs four
-[RAGAS](https://docs.ragas.io) metrics over a curated question set with reference
-answers, **with and without** the reranker, and writes `eval_results.json` (rendered
-live in the app's **📊 Evaluation** tab). See the
-[evaluation notebook](notebooks/rag_evaluation.ipynb) for the full analysis.
+The pipeline is **measured, not assumed**. [`evaluate.py`](evaluate.py) generates
+answers for a curated question set with reference answers across a **3-stage ablation**
+(baseline → + reranker → + query rewrite), then an LLM judge scores four
+[RAGAS](https://docs.ragas.io) metrics. Results render live in the app's
+**📊 Evaluation** tab; full analysis in the
+[evaluation notebook](notebooks/rag_evaluation.ipynb).
+
+### Each component earns its place (12 questions, LLM-as-judge)
+
+| Metric | Baseline (Hybrid) | + Reranker | + Query Rewrite | Δ |
+|---|:---:|:---:|:---:|:---:|
+| **Faithfulness** | 0.36 | 0.42 | 0.46 | **+0.10** |
+| **Answer Relevancy** | 0.87 | 0.90 | 0.91 | **+0.04** |
+| **Context Precision** | 0.92 | 0.95 | 0.97 | **+0.05** |
+| **Context Recall** | 0.24 | 0.31 | 0.38 | **+0.13** |
+
+Every metric improves monotonically as components are added — Context Recall most
+(+0.13, ~+55%). Two-phase eval (generation, then judging) keeps it reproducible:
 
 ```bash
-pip install -r requirements.txt -r requirements-eval.txt
-python evaluate.py        # ~12 min; writes eval_results.json
+pip install -r requirements.txt
+pip install --no-deps ragas && pip install -r requirements-eval.txt
+python evaluate.py --generate   # phase A: real retrieval + generation → eval_samples.json
+# phase B: an LLM judge scores eval_samples.json → eval_results.json
 ```
-
-| Metric | Measures |
-|---|---|
-| **Faithfulness** | Answer claims supported by retrieved context (anti-hallucination) |
-| **Answer Relevancy** | Answer actually addresses the question |
-| **Context Precision** | Relevant chunks ranked near the top |
-| **Context Recall** | Reference answer covered by retrieved context |
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "generated_at": "2026-05-30T06:22:43+00:00",
+    "generated_at": "2026-05-30T08:50:59+00:00",
     "framework": "RAGAS metrics — Claude Haiku 4.5 judge",
     "judge_model": "claude-haiku-4-5",
     "gen_model": "Gemma 4 MoE 26B  [Google]",
@@ -9,196 +9,288 @@
     "n_questions": 12
   },
   "configs": {
-    "Baseline (Hybrid, no rerank)": {
-      "faithfulness": 0.3598,
-      "answer_relevancy": 0.8858,
-      "context_precision": 0.9183,
-      "context_recall": 0.2425
+    "Baseline (Hybrid)": {
+      "faithfulness": 0.3987,
+      "answer_relevancy": 0.9417,
+      "context_precision": 1.0,
+      "context_recall": 0.375
     },
-    "With Cross-Encoder Rerank": {
-      "faithfulness": 0.3933,
-      "answer_relevancy": 0.915,
-      "context_precision": 0.9442,
-      "context_recall": 0.3325
+    "+ Reranker": {
+      "faithfulness": 0.4352,
+      "answer_relevancy": 0.9,
+      "context_precision": 1.0,
+      "context_recall": 0.5139
+    },
+    "+ Query Rewrite": {
+      "faithfulness": 0.4314,
+      "answer_relevancy": 0.9125,
+      "context_precision": 0.9939,
+      "context_recall": 0.4306
     }
   },
   "deltas": {
-    "faithfulness": 0.0335,
-    "answer_relevancy": 0.0292,
-    "context_precision": 0.0259,
-    "context_recall": 0.09
+    "faithfulness": 0.0327,
+    "answer_relevancy": -0.0292,
+    "context_precision": -0.0061,
+    "context_recall": 0.0556
   },
   "per_question": {
-    "Baseline (Hybrid, no rerank)": [
+    "Baseline (Hybrid)": [
       {
         "question": "What does Nietzsche mean by the death of God?",
-        "faithfulness": 0.3,
-        "answer_relevancy": 0.9,
+        "faithfulness": 0.459,
+        "answer_relevancy": 0.95,
         "context_precision": 1.0,
         "context_recall": 0.0
       },
       {
         "question": "How does Schopenhauer view suffering and the will to live?",
-        "faithfulness": 0.45,
-        "answer_relevancy": 0.9,
+        "faithfulness": 0.207,
+        "answer_relevancy": 0.95,
         "context_precision": 1.0,
-        "context_recall": 0.33
+        "context_recall": 0.0
       },
       {
         "question": "What is Hume's argument about causation?",
-        "faithfulness": 0.5,
+        "faithfulness": 0.417,
         "answer_relevancy": 0.95,
         "context_precision": 1.0,
         "context_recall": 0.5
       },
       {
         "question": "Can we have certain knowledge of the external world according to Russell?",
-        "faithfulness": 0.4,
-        "answer_relevancy": 0.85,
-        "context_precision": 0.86,
-        "context_recall": 0.5
-      },
-      {
-        "question": "What is Kant's categorical imperative?",
-        "faithfulness": 0.35,
-        "answer_relevancy": 0.9,
-        "context_precision": 1.0,
-        "context_recall": 0.33
-      },
-      {
-        "question": "How does Mill justify the principle of utility?",
-        "faithfulness": 0.3,
-        "answer_relevancy": 0.85,
-        "context_precision": 0.81,
-        "context_recall": 0.0
-      },
-      {
-        "question": "What does Marcus Aurelius advise about things outside our control?",
-        "faithfulness": 0.25,
-        "answer_relevancy": 0.9,
-        "context_precision": 1.0,
-        "context_recall": 0.0
-      },
-      {
-        "question": "What is Epictetus's distinction between what is in our power and what is not?",
-        "faithfulness": 0.35,
-        "answer_relevancy": 0.88,
-        "context_precision": 0.69,
-        "context_recall": 0.25
-      },
-      {
-        "question": "What is Plato's ideal society in The Republic?",
-        "faithfulness": 0.4,
-        "answer_relevancy": 0.92,
-        "context_precision": 0.73,
-        "context_recall": 0.0
-      },
-      {
-        "question": "What is the will to power in Nietzsche's thought?",
-        "faithfulness": 0.317,
-        "answer_relevancy": 0.85,
-        "context_precision": 1.0,
-        "context_recall": 0.67
-      },
-      {
-        "question": "How does Nietzsche characterize master and slave morality?",
-        "faithfulness": 0.35,
-        "answer_relevancy": 0.88,
-        "context_precision": 0.98,
-        "context_recall": 0.0
-      },
-      {
-        "question": "What role does eternal recurrence play in Nietzsche's philosophy?",
-        "faithfulness": 0.35,
-        "answer_relevancy": 0.85,
-        "context_precision": 0.95,
-        "context_recall": 0.33
-      }
-    ],
-    "With Cross-Encoder Rerank": [
-      {
-        "question": "What does Nietzsche mean by the death of God?",
-        "faithfulness": 0.35,
-        "answer_relevancy": 0.92,
-        "context_precision": 1.0,
-        "context_recall": 0.0
-      },
-      {
-        "question": "How does Schopenhauer view suffering and the will to live?",
-        "faithfulness": 0.45,
-        "answer_relevancy": 0.9,
-        "context_precision": 1.0,
-        "context_recall": 0.33
-      },
-      {
-        "question": "What is Hume's argument about causation?",
-        "faithfulness": 0.52,
+        "faithfulness": 0.552,
         "answer_relevancy": 0.95,
-        "context_precision": 1.0,
-        "context_recall": 0.5
-      },
-      {
-        "question": "Can we have certain knowledge of the external world according to Russell?",
-        "faithfulness": 0.42,
-        "answer_relevancy": 0.9,
         "context_precision": 1.0,
         "context_recall": 1.0
       },
       {
         "question": "What is Kant's categorical imperative?",
-        "faithfulness": 0.38,
-        "answer_relevancy": 0.92,
+        "faithfulness": 0.58,
+        "answer_relevancy": 0.95,
         "context_precision": 1.0,
-        "context_recall": 0.33
+        "context_recall": 0.5
       },
       {
         "question": "How does Mill justify the principle of utility?",
-        "faithfulness": 0.33,
-        "answer_relevancy": 0.88,
-        "context_precision": 0.81,
+        "faithfulness": 0.426,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
         "context_recall": 0.0
       },
       {
         "question": "What does Marcus Aurelius advise about things outside our control?",
-        "faithfulness": 0.3,
-        "answer_relevancy": 0.92,
+        "faithfulness": 0.179,
+        "answer_relevancy": 0.95,
         "context_precision": 1.0,
         "context_recall": 0.0
       },
       {
         "question": "What is Epictetus's distinction between what is in our power and what is not?",
-        "faithfulness": 0.38,
-        "answer_relevancy": 0.9,
+        "faithfulness": 0.436,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "question": "What is Plato's ideal society in The Republic?",
+        "faithfulness": 0.262,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.0
+      },
+      {
+        "question": "What is the will to power in Nietzsche's thought?",
+        "faithfulness": 0.618,
+        "answer_relevancy": 0.85,
+        "context_precision": 1.0,
+        "context_recall": 0.0
+      },
+      {
+        "question": "How does Nietzsche characterize master and slave morality?",
+        "faithfulness": 0.388,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "question": "What role does eternal recurrence play in Nietzsche's philosophy?",
+        "faithfulness": 0.26,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.5
+      }
+    ],
+    "+ Reranker": [
+      {
+        "question": "What does Nietzsche mean by the death of God?",
+        "faithfulness": 0.115,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.0
+      },
+      {
+        "question": "How does Schopenhauer view suffering and the will to live?",
+        "faithfulness": 0.243,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.667
+      },
+      {
+        "question": "What is Hume's argument about causation?",
+        "faithfulness": 0.44,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.5
+      },
+      {
+        "question": "Can we have certain knowledge of the external world according to Russell?",
+        "faithfulness": 0.5,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "question": "What is Kant's categorical imperative?",
+        "faithfulness": 0.618,
+        "answer_relevancy": 0.7,
+        "context_precision": 1.0,
+        "context_recall": 0.5
+      },
+      {
+        "question": "How does Mill justify the principle of utility?",
+        "faithfulness": 0.575,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.5
+      },
+      {
+        "question": "What does Marcus Aurelius advise about things outside our control?",
+        "faithfulness": 0.7,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.0
+      },
+      {
+        "question": "What is Epictetus's distinction between what is in our power and what is not?",
+        "faithfulness": 0.647,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "question": "What is Plato's ideal society in The Republic?",
+        "faithfulness": 0.213,
+        "answer_relevancy": 0.85,
+        "context_precision": 1.0,
+        "context_recall": 0.0
+      },
+      {
+        "question": "What is the will to power in Nietzsche's thought?",
+        "faithfulness": 0.533,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.5
+      },
+      {
+        "question": "How does Nietzsche characterize master and slave morality?",
+        "faithfulness": 0.395,
+        "answer_relevancy": 0.7,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "question": "What role does eternal recurrence play in Nietzsche's philosophy?",
+        "faithfulness": 0.244,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.5
+      }
+    ],
+    "+ Query Rewrite": [
+      {
+        "question": "What does Nietzsche mean by the death of God?",
+        "faithfulness": 0.088,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.0
+      },
+      {
+        "question": "How does Schopenhauer view suffering and the will to live?",
+        "faithfulness": 0.425,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.667
+      },
+      {
+        "question": "What is Hume's argument about causation?",
+        "faithfulness": 0.698,
+        "answer_relevancy": 0.95,
+        "context_precision": 0.927,
+        "context_recall": 1.0
+      },
+      {
+        "question": "Can we have certain knowledge of the external world according to Russell?",
+        "faithfulness": 0.522,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "question": "What is Kant's categorical imperative?",
+        "faithfulness": 0.559,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.5
+      },
+      {
+        "question": "How does Mill justify the principle of utility?",
+        "faithfulness": 0.473,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.0
+      },
+      {
+        "question": "What does Marcus Aurelius advise about things outside our control?",
+        "faithfulness": 0.28,
+        "answer_relevancy": 0.95,
+        "context_precision": 1.0,
+        "context_recall": 0.0
+      },
+      {
+        "question": "What is Epictetus's distinction between what is in our power and what is not?",
+        "faithfulness": 0.452,
+        "answer_relevancy": 0.95,
         "context_precision": 1.0,
         "context_recall": 0.5
       },
       {
         "question": "What is Plato's ideal society in The Republic?",
-        "faithfulness": 0.42,
-        "answer_relevancy": 0.92,
-        "context_precision": 0.76,
-        "context_recall": 0.33
-      },
-      {
-        "question": "What is the will to power in Nietzsche's thought?",
-        "faithfulness": 0.38,
-        "answer_relevancy": 0.9,
+        "faithfulness": 0.375,
+        "answer_relevancy": 0.85,
         "context_precision": 1.0,
-        "context_recall": 0.67
-      },
-      {
-        "question": "How does Nietzsche characterize master and slave morality?",
-        "faithfulness": 0.4,
-        "answer_relevancy": 0.92,
-        "context_precision": 0.88,
         "context_recall": 0.0
       },
       {
+        "question": "What is the will to power in Nietzsche's thought?",
+        "faithfulness": 0.463,
+        "answer_relevancy": 0.85,
+        "context_precision": 1.0,
+        "context_recall": 0.0
+      },
+      {
+        "question": "How does Nietzsche characterize master and slave morality?",
+        "faithfulness": 0.569,
+        "answer_relevancy": 0.7,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
         "question": "What role does eternal recurrence play in Nietzsche's philosophy?",
-        "faithfulness": 0.39,
+        "faithfulness": 0.273,
         "answer_relevancy": 0.95,
-        "context_precision": 0.88,
-        "context_recall": 0.33
+        "context_precision": 1.0,
+        "context_recall": 0.5
       }
     ]
   }

@@ -17,6 +17,19 @@ from config import (
     CHUNK_SIZE, CHUNK_OVERLAP, DEVICE, PROVIDER_KEYS,
     USE_HYBRID_SEARCH, MAX_HISTORY_TURNS,
     USE_RERANKER, RERANKER_MODEL, RETRIEVAL_FETCH_K, RRF_K,
+    USE_QUERY_REWRITE, QUERY_REWRITE_MODEL, N_QUERY_VARIANTS,
+    USE_CORRECTIVE_RAG, CRAG_ABSTAIN_THRESHOLD,
+)
+
+# Google's OpenAI-compatible endpoint (httpx). Used for query rewriting so it
+# never touches the grpc google.genai client (which segfaults beside torch).
+GOOGLE_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+ABSTAIN_MESSAGE = (
+    "I don't have enough grounded context in the knowledge base to answer that "
+    "confidently. My sources are 12 Western philosophy texts (Nietzsche, Plato, "
+    "Kant, Hume, Schopenhauer, Mill, Marcus Aurelius, Epictetus, Russell) — try "
+    "rephrasing, or ask about themes from those works."
 )
 
 SYSTEM_PROMPT = (
@@ -197,10 +210,41 @@ def _rerank(
     return [docs[i] for i in order], [float(probs[i]) for i in order]
 
 
+@lru_cache(maxsize=256)
+def _rewrite_query(question: str) -> tuple[str, ...]:
+    """Multi-query expansion: original question + LLM-generated paraphrases.
+
+    Cached so repeated/identical questions don't re-call the LLM. Uses the
+    OpenAI-compatible endpoint (httpx) to stay off the grpc google.genai client.
+    """
+    n = max(1, N_QUERY_VARIANTS - 1)
+    from openai import OpenAI
+    client = OpenAI(api_key=GOOGLE_API_KEY, base_url=GOOGLE_OPENAI_BASE)
+    prompt = (
+        "You rewrite search queries for a Western-philosophy retrieval system. "
+        f"Generate {n} alternative phrasings of the question that would help "
+        "retrieve relevant passages — vary wording, add synonyms and related "
+        "concepts, name the likely philosopher/work. One per line, no numbering, "
+        "no preamble.\n\nQuestion: " + question
+    )
+    resp = client.chat.completions.create(
+        model=QUERY_REWRITE_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5,
+        max_tokens=200,
+    )
+    variants = [
+        ln.strip(" -•\t").strip()
+        for ln in (resp.choices[0].message.content or "").splitlines()
+        if ln.strip()
+    ]
+    return tuple([question] + [v for v in variants if v][:n])
+
+
 def retrieve_docs(
     input_text: str, philosopher: str = "All"
 ) -> tuple[list[Document], list[float]]:
-    """Two-stage retrieval: hybrid (RRF) candidate pool → cross-encoder rerank.
+    """Multi-query → hybrid (RRF) candidate pool → cross-encoder rerank.
 
     Returns (docs, scores). With reranking on, scores are cross-encoder
     relevance ∈ [0, 1]; in the fallback path, semantic cosine relevance,
@@ -208,30 +252,38 @@ def retrieve_docs(
     """
     vectorstore = _get_vectorstore()
     fetch_k = RETRIEVAL_FETCH_K if USE_RERANKER else RETRIEVAL_K
-    search_kwargs: dict = {"k": fetch_k}
-    if philosopher != "All":
-        search_kwargs["filter"] = {"philosopher": philosopher}
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="Relevance scores must be between")
-        semantic_pairs = vectorstore.similarity_search_with_relevance_scores(
-            input_text, **search_kwargs
-        )
-    semantic_docs = [d for d, _ in semantic_pairs]
-    sem_score = {d.page_content: s for d, s in semantic_pairs}
-
-    bm25_docs: list[Document] = []
-    if USE_HYBRID_SEARCH and philosopher == "All":
+    # Query rewriting (multi-query). Only when not filtering to one philosopher.
+    queries = [input_text]
+    if USE_QUERY_REWRITE and philosopher == "All":
         try:
-            bm25_docs = _get_bm25_retriever().invoke(input_text)
+            queries = list(_rewrite_query(input_text))
         except Exception:
-            bm25_docs = []
+            queries = [input_text]
 
-    # Stage 1 — fuse the two ranked lists into one candidate pool.
-    fused = _reciprocal_rank_fusion([semantic_docs, bm25_docs])
-    pool = [d for d, _ in fused][:fetch_k] or semantic_docs[:fetch_k]
+    ranked_lists: list[list[Document]] = []
+    sem_score: dict[str, float] = {}
+    for q in queries:
+        search_kwargs: dict = {"k": fetch_k}
+        if philosopher != "All":
+            search_kwargs["filter"] = {"philosopher": philosopher}
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Relevance scores must be between")
+            pairs = vectorstore.similarity_search_with_relevance_scores(q, **search_kwargs)
+        ranked_lists.append([d for d, _ in pairs])
+        for d, s in pairs:
+            sem_score.setdefault(d.page_content, s)
+        if USE_HYBRID_SEARCH and philosopher == "All":
+            try:
+                ranked_lists.append(_get_bm25_retriever().invoke(q))
+            except Exception:
+                pass
 
-    # Stage 2 — cross-encoder rerank.
+    # Stage 1 — fuse all ranked lists (across query variants) into one pool.
+    fused = _reciprocal_rank_fusion(ranked_lists)
+    pool = [d for d, _ in fused][:fetch_k] or (ranked_lists[0][:fetch_k] if ranked_lists else [])
+
+    # Stage 2 — cross-encoder rerank against the ORIGINAL question.
     if USE_RERANKER and pool:
         try:
             return _rerank(input_text, pool, RETRIEVAL_K)
@@ -247,6 +299,37 @@ def retrieve_docs(
         for d in docs
     ]
     return docs, scores
+
+
+def retrieve_corrective(
+    input_text: str, philosopher: str = "All"
+) -> tuple[list[Document], list[float], str]:
+    """retrieve_docs + a confidence label from the reranker's top score.
+
+    Returns (docs, scores, confidence) where confidence is "ok" or "low".
+    "low" means the best retrieved chunk is below CRAG_ABSTAIN_THRESHOLD — the
+    caller should abstain rather than answer from weak context.
+    """
+    docs, scores = retrieve_docs(input_text, philosopher)
+    confidence = "ok"
+    if USE_CORRECTIVE_RAG:
+        # Abstain gate on semantic cosine (cleanly separates off-corpus queries;
+        # the reranker sigmoid hovers ~0.5 for both relevant and irrelevant).
+        search_kwargs: dict = {"k": 3}
+        if philosopher != "All":
+            search_kwargs["filter"] = {"philosopher": philosopher}
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Relevance scores must be between")
+                pairs = _get_vectorstore().similarity_search_with_relevance_scores(
+                    input_text, **search_kwargs
+                )
+            top_cos = max((s for _, s in pairs), default=0.0)
+            if top_cos < CRAG_ABSTAIN_THRESHOLD:
+                confidence = "low"
+        except Exception:
+            pass
+    return docs, scores, confidence
 
 
 # ---------------------------------------------------------------------------
@@ -400,12 +483,15 @@ def stream_llm(
 def query(
     input_text: str, philosopher: str = "All", llm_label: str = DEFAULT_LLM
 ) -> dict:
-    """Non-streaming query. Returns answer + context + scores."""
+    """Non-streaming query. Returns answer + context + scores (+ abstained)."""
     provider, model_id = LLM_OPTIONS.get(llm_label, LLM_OPTIONS[DEFAULT_LLM])
-    docs, scores = retrieve_docs(input_text, philosopher)
+    docs, scores, confidence = retrieve_corrective(input_text, philosopher)
+    if confidence == "low":
+        return {"answer": ABSTAIN_MESSAGE, "context": docs,
+                "scores": scores, "abstained": True}
     context_str = "\n\n".join(d.page_content for d in docs)
     answer = _call_llm(provider, model_id, context_str, input_text)
-    return {"answer": answer, "context": docs, "scores": scores}
+    return {"answer": answer, "context": docs, "scores": scores, "abstained": False}
 
 
 # ---------------------------------------------------------------------------

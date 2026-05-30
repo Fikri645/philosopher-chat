@@ -88,6 +88,28 @@ RERANKER_MODEL    = "BAAI/bge-reranker-v2-m3"  # multilingual (handles ID querie
 RETRIEVAL_FETCH_K = 20      # candidates retrieved before reranking
 RRF_K             = 60      # RRF damping constant (standard default)
 
+# ---------------------------------------------------------------------------
+# Query rewriting (multi-query expansion)
+#   The user's phrasing is rarely the best retrieval query. An LLM generates
+#   alternative phrasings; each is retrieved and the results are fused with RRF
+#   before reranking — lifts recall on differently-worded questions.
+# ---------------------------------------------------------------------------
+USE_QUERY_REWRITE   = True
+QUERY_REWRITE_MODEL = "gemini-3.1-flash-lite"  # fast/cheap, via OpenAI-compat endpoint
+N_QUERY_VARIANTS    = 3      # total queries incl. the original
+
+# ---------------------------------------------------------------------------
+# Corrective RAG + abstention
+#   If the reranker's top relevance score is below the threshold, the retrieved
+#   context is too weak — the system abstains instead of answering from poor
+#   evidence (calibrated hallucination guard for out-of-corpus questions).
+# ---------------------------------------------------------------------------
+USE_CORRECTIVE_RAG     = True
+# Gate on the top semantic cosine score: off-corpus questions score ~0.0 while
+# in-corpus ones score >=~0.2, so cosine separates them cleanly (the reranker's
+# sigmoid sits near 0.5 for both and is unsuitable as an abstain signal).
+CRAG_ABSTAIN_THRESHOLD = 0.12
+
 # Max number of *turns* (1 turn = 1 user + 1 assistant message) to keep in
 # LLM history. Each RAG turn adds ~7 000 tokens (6 chunks + Q + A), so 4 turns
 # ≈ 28 K tokens — safely under the 32 K limit of Gemma/Qwen3 while leaving

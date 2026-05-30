@@ -9,8 +9,9 @@ import plotly.graph_objects as go
 import pandas as pd
 
 from rag_chain import (
-    retrieve_docs, stream_llm, query, add_to_kb, vectorstore_exists,
-    get_all_philosophers, get_kb_stats, get_umap_data,
+    retrieve_docs, retrieve_corrective, stream_llm, query, add_to_kb,
+    vectorstore_exists, get_all_philosophers, get_kb_stats, get_umap_data,
+    ABSTAIN_MESSAGE,
 )
 from config import (
     LLM_OPTIONS, DEFAULT_LLM, EMBEDDING_OPTIONS, DEFAULT_EMBEDDING,
@@ -177,7 +178,7 @@ def respond_stream(message: str, history: list, philosopher: str, llm_label: str
 
     # — Retrieval (fast, happens before streaming) —
     t0 = time.perf_counter()
-    docs, scores = retrieve_docs(retrieval_query, philosopher)
+    docs, scores, confidence = retrieve_corrective(retrieval_query, philosopher)
     retrieve_time = time.perf_counter() - t0
     context_str = "\n\n".join(d.page_content for d in docs)
 
@@ -196,6 +197,14 @@ def respond_stream(message: str, history: list, philosopher: str, llm_label: str
     ]
     # Show user bubble + loading message immediately
     yield history, "", gr.update(value=chunks_md), gr.update()
+
+    # Corrective RAG — abstain when retrieval confidence is too low (off-corpus
+    # question) instead of hallucinating from weak context.
+    if confidence == "low":
+        history[-1]["content"] = ABSTAIN_MESSAGE
+        metrics_md = _format_metrics(retrieve_time, 0.0, len(docs), 0)
+        yield history, "", gr.update(value=chunks_md), gr.update(value=metrics_md)
+        return
 
     provider, model_id = LLM_OPTIONS.get(llm_label, LLM_OPTIONS[DEFAULT_LLM])
     t1 = time.perf_counter()
@@ -338,30 +347,28 @@ def build_eval_table() -> str:
             "`eval_results.json` (RAGAS metrics, ~12 min)._"
         )
     cfgs = list(data["configs"].keys())
-    base, rer = cfgs[0], cfgs[1]
+    first, last = cfgs[0], cfgs[-1]
     meta = data.get("metadata", {})
 
+    header = "| Metric | " + " | ".join(cfgs) + " | Δ (full) |"
+    sep = "|---|" + "|".join([":---:"] * (len(cfgs) + 1)) + "|"
     lines = [
         f"**Evaluated with `{meta.get('framework', 'ragas')}`** &nbsp;·&nbsp; "
         f"{meta.get('n_questions', '?')} questions "
-        f"&nbsp;·&nbsp; judge: `{meta.get('judge_model', '?')}` "
-        f"&nbsp;·&nbsp; reranker: `{meta.get('reranker_model', '?')}`\n",
-        f"| Metric | {base} | {rer} | Δ |",
-        "|---|:---:|:---:|:---:|",
+        f"&nbsp;·&nbsp; judge: `{meta.get('judge_model', '?')}`\n",
+        header, sep,
     ]
     for m in _METRIC_LABELS:
-        b = data["configs"][base].get(m, 0.0)
-        r = data["configs"][rer].get(m, 0.0)
-        d = data["deltas"].get(m, 0.0)
+        vals = " | ".join(f"{data['configs'][c].get(m, 0.0):.3f}" for c in cfgs)
+        d = data.get("deltas", {}).get(m, data["configs"][last].get(m, 0.0) - data["configs"][first].get(m, 0.0))
         arrow = "🟢" if d > 0.005 else ("🔴" if d < -0.005 else "⚪")
         lines.append(
             f"| **{_METRIC_LABELS[m]}**<br><sub>{_METRIC_DESC[m]}</sub> "
-            f"| {b:.3f} | {r:.3f} | {arrow} {d:+.3f} |"
+            f"| {vals} | {arrow} {d:+.3f} |"
         )
     lines.append(
-        f"\n_Generated {meta.get('generated_at', '?')} &nbsp;·&nbsp; "
-        "computed with the [RAGAS](https://docs.ragas.io) library "
-        "(LLM-as-judge)._"
+        f"\n_Δ = full pipeline vs. baseline. Generated {meta.get('generated_at', '?')} "
+        "· metrics follow [RAGAS](https://docs.ragas.io) definitions (LLM-as-judge)._"
     )
     return "\n".join(lines)
 
@@ -373,22 +380,22 @@ def build_eval_chart():
     cfgs = list(data["configs"].keys())
     metrics = list(_METRIC_LABELS.keys())
     labels = [_METRIC_LABELS[m] for m in metrics]
-    palette = {cfgs[0]: "#6366F1", cfgs[1]: "#22C55E"}
+    colors = ["#6366F1", "#22C55E", "#F59E0B", "#EF4444"]
 
     fig = go.Figure()
-    for cfg in cfgs:
+    for i, cfg in enumerate(cfgs):
         fig.add_bar(
             name=cfg,
             x=labels,
             y=[data["configs"][cfg].get(m, 0.0) for m in metrics],
-            marker_color=palette.get(cfg),
+            marker_color=colors[i % len(colors)],
             text=[f"{data['configs'][cfg].get(m, 0.0):.2f}" for m in metrics],
             textposition="outside",
         )
     fig.update_layout(
         barmode="group",
         template="plotly_dark",
-        title="Retrieval Quality — Baseline vs Cross-Encoder Rerank",
+        title="Retrieval Quality across pipeline stages",
         title_font=dict(size=14),
         height=460,
         yaxis=dict(range=[0, 1.05], title="score", gridcolor="rgba(255,255,255,0.08)"),
@@ -449,8 +456,8 @@ with gr.Blocks(title="Philosopher Chat") as demo:
 # 📚 Philosopher Chat
 **RAG chatbot grounded in Western philosophical primary texts**
 
-Hybrid retrieval + cross-encoder reranking &nbsp;·&nbsp; Real-time streaming
-&nbsp;·&nbsp; Multi-provider LLM routing &nbsp;·&nbsp; RAGAS-evaluated &nbsp;·&nbsp; 12 primary texts · ~5 700 chunks
+Query rewriting + hybrid retrieval + reranking + corrective abstention &nbsp;·&nbsp; Streaming
+&nbsp;·&nbsp; Multi-provider routing &nbsp;·&nbsp; RAGAS-evaluated &nbsp;·&nbsp; 12 primary texts · ~5 700 chunks
         """
     )
 
@@ -512,8 +519,10 @@ Hybrid retrieval + cross-encoder reranking &nbsp;·&nbsp; Real-time streaming
                     with gr.Group():
                         gr.Markdown("**ℹ️ Stack**", elem_classes="section-label")
                         gr.Markdown(
+                            "- Query: **Multi-query rewrite**\n"
                             "- Retrieval: **Hybrid (RRF) + Rerank**\n"
                             "- Reranker: **BGE-reranker-v2-m3**\n"
+                            "- Guard: **Corrective RAG / abstention**\n"
                             "- Embeddings: **EmbeddingGemma-300M**\n"
                             "- Vector DB: **ChromaDB**\n"
                             "- Framework: **LangChain LCEL**\n"

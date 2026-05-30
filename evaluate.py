@@ -251,7 +251,8 @@ def _generate(question: str) -> dict:
     docs, _ = rag_chain.retrieve_docs(question, "All")  # torch retrieval (no grpc)
     context_str = "\n\n".join(d.page_content for d in docs)
     from openai import OpenAI
-    client = OpenAI(api_key=GOOGLE_API_KEY, base_url=GOOGLE_OPENAI_BASE)
+    client = OpenAI(api_key=GOOGLE_API_KEY, base_url=GOOGLE_OPENAI_BASE,
+                    timeout=90, max_retries=2)  # avoid indefinite hangs
     user = (f"Relevant passages from your knowledge base:\n{context_str}\n\n"
             f"Question: {question}")
     resp = client.chat.completions.create(
@@ -261,6 +262,7 @@ def _generate(question: str) -> dict:
             {"role": "user", "content": user},
         ],
         temperature=0.3,
+        timeout=90,
     )
     return {"answer": resp.choices[0].message.content, "context": docs}
 
@@ -309,21 +311,25 @@ def run_config(name: str, use_reranker: bool, eval_set: list[dict], scorers: dic
 
 SAMPLES_PATH = rag_chain.VECTORSTORE_DIR.parent / "eval_samples.json"
 
+# (name, use_reranker, use_query_rewrite) — an incremental A/B/C ablation.
 CONFIGS = [
-    ("Baseline (Hybrid, no rerank)", False),
-    ("With Cross-Encoder Rerank", True),
+    ("Baseline (Hybrid)", False, False),
+    ("+ Reranker", True, False),
+    ("+ Query Rewrite", True, True),
 ]
 
 
 def generate_samples(eval_set: list[dict]) -> dict:
     """Phase A: run the real RAG pipeline (retrieval + generation) for every
-    question under both configs and dump the samples. No LLM judging here, so
+    question under each config and dump the samples. No LLM judging here, so
     no rate limits and no torch+judge segfault — the judging is a separate phase.
     """
+    rag_chain.USE_CORRECTIVE_RAG = False  # never abstain during evaluation
     out: dict[str, list[dict]] = {}
-    for cfg_name, use_rr in CONFIGS:
+    for cfg_name, use_rr, use_rw in CONFIGS:
         rag_chain.USE_RERANKER = use_rr
-        print(f"\n=== Generating: {cfg_name}  (reranker={'ON' if use_rr else 'OFF'}) ===")
+        rag_chain.USE_QUERY_REWRITE = use_rw
+        print(f"\n=== Generating: {cfg_name}  (rerank={use_rr}, rewrite={use_rw}) ===")
         rows = []
         for i, item in enumerate(eval_set, 1):
             res = _generate_with_retry(item["question"])
