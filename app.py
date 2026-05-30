@@ -1,15 +1,21 @@
+import json
 import re
 import time
+from pathlib import Path
 
 import gradio as gr
 import plotly.express as px
+import plotly.graph_objects as go
 import pandas as pd
 
 from rag_chain import (
     retrieve_docs, stream_llm, query, add_to_kb, vectorstore_exists,
     get_all_philosophers, get_kb_stats, get_umap_data,
 )
-from config import LLM_OPTIONS, DEFAULT_LLM, EMBEDDING_OPTIONS, DEFAULT_EMBEDDING
+from config import (
+    LLM_OPTIONS, DEFAULT_LLM, EMBEDDING_OPTIONS, DEFAULT_EMBEDDING,
+    USE_RERANKER, RERANKER_MODEL,
+)
 
 # ---------------------------------------------------------------------------
 # Display helpers
@@ -86,14 +92,22 @@ def _format_retrieved_chunks(docs: list, scores: list[float]) -> str:
     if not docs:
         return "_No chunks retrieved._"
 
-    semantic_scores = [s for s in scores if s >= 0]
-    avg = sum(semantic_scores) / len(semantic_scores) if semantic_scores else 0.0
+    pos_scores = [s for s in scores if s >= 0]
+    avg = sum(pos_scores) / len(pos_scores) if pos_scores else 0.0
     has_bm25 = any(s < 0 for s in scores)
-    method = "Hybrid BM25 + Semantic" if has_bm25 else "Semantic"
+    if USE_RERANKER:
+        method = "Hybrid (RRF) → Cross-Encoder Rerank"
+        score_label = "avg relevance"
+    elif has_bm25:
+        method = "Hybrid BM25 + Semantic"
+        score_label = "avg similarity"
+    else:
+        method = "Semantic"
+        score_label = "avg similarity"
 
     lines = [
         f"**{len(docs)} chunks** &nbsp;·&nbsp; {method}"
-        f" &nbsp;·&nbsp; avg similarity: **{avg:.3f}**\n"
+        f" &nbsp;·&nbsp; {score_label}: **{avg:.3f}**\n"
     ]
     for i, (doc, score) in enumerate(zip(docs, scores), 1):
         phil  = doc.metadata.get("philosopher", "?")
@@ -289,6 +303,109 @@ def build_umap_plot():
 
 
 # ---------------------------------------------------------------------------
+# RAGAS evaluation results
+# ---------------------------------------------------------------------------
+
+_EVAL_PATH = Path(__file__).parent / "eval_results.json"
+_METRIC_LABELS = {
+    "faithfulness": "Faithfulness",
+    "answer_relevancy": "Answer Relevancy",
+    "context_precision": "Context Precision",
+    "context_recall": "Context Recall",
+}
+_METRIC_DESC = {
+    "faithfulness": "Share of answer claims supported by retrieved context (anti-hallucination)",
+    "answer_relevancy": "How directly the answer addresses the question",
+    "context_precision": "Are the relevant chunks ranked near the top?",
+    "context_recall": "Share of the reference answer covered by retrieved context",
+}
+
+
+def _load_eval() -> dict | None:
+    if not _EVAL_PATH.exists():
+        return None
+    try:
+        return json.loads(_EVAL_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def build_eval_table() -> str:
+    data = _load_eval()
+    if data is None:
+        return (
+            "_No evaluation results yet. Run_ `python evaluate.py` _to generate "
+            "`eval_results.json` (RAGAS metrics, ~12 min)._"
+        )
+    cfgs = list(data["configs"].keys())
+    base, rer = cfgs[0], cfgs[1]
+    meta = data.get("metadata", {})
+
+    lines = [
+        f"**Evaluated with `{meta.get('framework', 'ragas')}`** &nbsp;·&nbsp; "
+        f"{meta.get('n_questions', '?')} questions "
+        f"&nbsp;·&nbsp; judge: `{meta.get('judge_model', '?')}` "
+        f"&nbsp;·&nbsp; reranker: `{meta.get('reranker_model', '?')}`\n",
+        f"| Metric | {base} | {rer} | Δ |",
+        "|---|:---:|:---:|:---:|",
+    ]
+    for m in _METRIC_LABELS:
+        b = data["configs"][base].get(m, 0.0)
+        r = data["configs"][rer].get(m, 0.0)
+        d = data["deltas"].get(m, 0.0)
+        arrow = "🟢" if d > 0.005 else ("🔴" if d < -0.005 else "⚪")
+        lines.append(
+            f"| **{_METRIC_LABELS[m]}**<br><sub>{_METRIC_DESC[m]}</sub> "
+            f"| {b:.3f} | {r:.3f} | {arrow} {d:+.3f} |"
+        )
+    lines.append(
+        f"\n_Generated {meta.get('generated_at', '?')} &nbsp;·&nbsp; "
+        "computed with the [RAGAS](https://docs.ragas.io) library "
+        "(LLM-as-judge)._"
+    )
+    return "\n".join(lines)
+
+
+def build_eval_chart():
+    data = _load_eval()
+    if data is None:
+        return None
+    cfgs = list(data["configs"].keys())
+    metrics = list(_METRIC_LABELS.keys())
+    labels = [_METRIC_LABELS[m] for m in metrics]
+    palette = {cfgs[0]: "#6366F1", cfgs[1]: "#22C55E"}
+
+    fig = go.Figure()
+    for cfg in cfgs:
+        fig.add_bar(
+            name=cfg,
+            x=labels,
+            y=[data["configs"][cfg].get(m, 0.0) for m in metrics],
+            marker_color=palette.get(cfg),
+            text=[f"{data['configs'][cfg].get(m, 0.0):.2f}" for m in metrics],
+            textposition="outside",
+        )
+    fig.update_layout(
+        barmode="group",
+        template="plotly_dark",
+        title="Retrieval Quality — Baseline vs Cross-Encoder Rerank",
+        title_font=dict(size=14),
+        height=460,
+        yaxis=dict(range=[0, 1.05], title="score", gridcolor="rgba(255,255,255,0.08)"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="rgba(220,220,220,0.9)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=50, r=20, t=70, b=40),
+    )
+    return fig
+
+
+def refresh_eval():
+    return gr.update(value=build_eval_table()), build_eval_chart()
+
+
+# ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 
@@ -332,8 +449,8 @@ with gr.Blocks(title="Philosopher Chat") as demo:
 # 📚 Philosopher Chat
 **RAG chatbot grounded in Western philosophical primary texts**
 
-Hybrid BM25 + Semantic retrieval &nbsp;·&nbsp; Real-time streaming
-&nbsp;·&nbsp; Multi-provider LLM routing &nbsp;·&nbsp; 12 primary texts · ~5 700 chunks
+Hybrid retrieval + cross-encoder reranking &nbsp;·&nbsp; Real-time streaming
+&nbsp;·&nbsp; Multi-provider LLM routing &nbsp;·&nbsp; RAGAS-evaluated &nbsp;·&nbsp; 12 primary texts · ~5 700 chunks
         """
     )
 
@@ -395,7 +512,8 @@ Hybrid BM25 + Semantic retrieval &nbsp;·&nbsp; Real-time streaming
                     with gr.Group():
                         gr.Markdown("**ℹ️ Stack**", elem_classes="section-label")
                         gr.Markdown(
-                            "- Retrieval: **Hybrid BM25 + Semantic**\n"
+                            "- Retrieval: **Hybrid (RRF) + Rerank**\n"
+                            "- Reranker: **BGE-reranker-v2-m3**\n"
                             "- Embeddings: **EmbeddingGemma-300M**\n"
                             "- Vector DB: **ChromaDB**\n"
                             "- Framework: **LangChain LCEL**\n"
@@ -492,6 +610,30 @@ Hybrid BM25 + Semantic retrieval &nbsp;·&nbsp; Real-time streaming
                             elem_classes="status-box",
                         )
 
+        # ── Tab 4 ─ Evaluation ───────────────────────────────────────────
+        with gr.Tab("📊 Evaluation"):
+            gr.Markdown(
+                "### Does reranking actually help?\n"
+                "The retrieval pipeline is measured with four **RAGAS** metrics "
+                "over a curated question set with reference answers — once with the "
+                "cross-encoder reranker **off** (hybrid baseline) and once **on**. "
+                "This quantifies the impact of each retrieval component instead of "
+                "guessing. _(Computed offline by_ `evaluate.py`_; an LLM acts as judge.)_"
+            )
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=1):
+                    eval_table = gr.Markdown(build_eval_table())
+                with gr.Column(scale=1):
+                    eval_chart = gr.Plot(build_eval_chart())
+            refresh_eval_btn = gr.Button("↻ Reload results", size="sm")
+            gr.Markdown(
+                "**Metric definitions** &nbsp;·&nbsp; "
+                "**Faithfulness**: answer grounded in context (anti-hallucination) &nbsp;·&nbsp; "
+                "**Answer Relevancy**: answer addresses the question &nbsp;·&nbsp; "
+                "**Context Precision**: relevant chunks ranked high &nbsp;·&nbsp; "
+                "**Context Recall**: reference answer covered by context."
+            )
+
     # ── Event wiring ─────────────────────────────────────────────────────
 
     msg_input.submit(
@@ -515,6 +657,8 @@ Hybrid BM25 + Semantic retrieval &nbsp;·&nbsp; Real-time streaming
         inputs=[file_upload, author_input, title_input],
         outputs=[upload_status, philosopher_filter],
     ).then(refresh_kb, outputs=kb_display)
+
+    refresh_eval_btn.click(refresh_eval, outputs=[eval_table, eval_chart])
 
 
 def _auto_ingest() -> None:

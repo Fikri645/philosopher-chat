@@ -73,8 +73,20 @@ EMBEDDING_MODEL   = EMBEDDING_OPTIONS[DEFAULT_EMBEDDING]
 # ---------------------------------------------------------------------------
 CHUNK_SIZE        = 1000
 CHUNK_OVERLAP     = 150
-RETRIEVAL_K       = 6       # slightly more to absorb BM25 extras
-USE_HYBRID_SEARCH = True    # BM25 + semantic ensemble
+RETRIEVAL_K       = 6       # final number of chunks passed to the LLM
+USE_HYBRID_SEARCH = True    # BM25 + semantic ensemble (fused with RRF)
+
+# ---------------------------------------------------------------------------
+# Reranking (2-stage retrieval)
+#   Stage 1: hybrid (semantic + BM25) → fetch RETRIEVAL_FETCH_K candidates,
+#            merged with Reciprocal Rank Fusion (RRF).
+#   Stage 2: cross-encoder reranker scores each (query, chunk) pair jointly
+#            and keeps the top RETRIEVAL_K. Highest-ROI precision boost.
+# ---------------------------------------------------------------------------
+USE_RERANKER      = True
+RERANKER_MODEL    = "BAAI/bge-reranker-v2-m3"  # multilingual (handles ID queries)
+RETRIEVAL_FETCH_K = 20      # candidates retrieved before reranking
+RRF_K             = 60      # RRF damping constant (standard default)
 
 # Max number of *turns* (1 turn = 1 user + 1 assistant message) to keep in
 # LLM history. Each RAG turn adds ~7 000 tokens (6 chunks + Q + A), so 4 turns

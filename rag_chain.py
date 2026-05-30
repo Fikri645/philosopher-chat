@@ -16,6 +16,7 @@ from config import (
     EMBEDDING_MODEL, VECTORSTORE_DIR, RETRIEVAL_K,
     CHUNK_SIZE, CHUNK_OVERLAP, DEVICE, PROVIDER_KEYS,
     USE_HYBRID_SEARCH, MAX_HISTORY_TURNS,
+    USE_RERANKER, RERANKER_MODEL, RETRIEVAL_FETCH_K, RRF_K,
 )
 
 SYSTEM_PROMPT = (
@@ -120,8 +121,15 @@ def _get_bm25_retriever():
         if d.strip()
     ]
     retriever = BM25Retriever.from_documents(docs)
-    retriever.k = RETRIEVAL_K
+    retriever.k = RETRIEVAL_FETCH_K  # large candidate pool for reranking
     return retriever
+
+
+@lru_cache(maxsize=1)
+def _get_reranker():
+    """Cross-encoder reranker (cached). Scores (query, chunk) pairs jointly."""
+    from sentence_transformers import CrossEncoder
+    return CrossEncoder(RERANKER_MODEL, device=DEVICE, max_length=512)
 
 
 # ---------------------------------------------------------------------------
@@ -156,40 +164,89 @@ def get_kb_stats() -> dict:
 # Retrieval
 # ---------------------------------------------------------------------------
 
+def _reciprocal_rank_fusion(
+    ranked_lists: list[list[Document]], k: int = RRF_K
+) -> list[tuple[Document, float]]:
+    """Merge several ranked document lists with Reciprocal Rank Fusion.
+
+    RRF score(d) = Σ 1 / (k + rank_i(d)). Rank-based, so it needs no score
+    calibration between the dense (cosine) and sparse (BM25) retrievers.
+    """
+    scores: dict[str, float] = {}
+    doc_by_key: dict[str, Document] = {}
+    for ranked in ranked_lists:
+        for rank, doc in enumerate(ranked):
+            key = doc.page_content
+            doc_by_key[key] = doc
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+    ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    return [(doc_by_key[key], score) for key, score in ordered]
+
+
+def _rerank(
+    query: str, docs: list[Document], top_k: int
+) -> tuple[list[Document], list[float]]:
+    """Cross-encoder rerank. Returns top_k docs with relevance ∈ [0, 1]."""
+    import numpy as np
+
+    reranker = _get_reranker()
+    pairs = [[query, d.page_content] for d in docs]
+    raw = reranker.predict(pairs, show_progress_bar=False)
+    probs = 1.0 / (1.0 + np.exp(-np.asarray(raw, dtype=float)))  # sigmoid → [0,1]
+    order = np.argsort(probs)[::-1][:top_k]
+    return [docs[i] for i in order], [float(probs[i]) for i in order]
+
+
 def retrieve_docs(
     input_text: str, philosopher: str = "All"
 ) -> tuple[list[Document], list[float]]:
-    """Hybrid BM25 + semantic retrieval.
+    """Two-stage retrieval: hybrid (RRF) candidate pool → cross-encoder rerank.
 
-    Returns (docs, scores) where scores are cosine relevance ∈ [0, 1].
-    BM25-only results are tagged with score -1.0 (no embedding similarity).
+    Returns (docs, scores). With reranking on, scores are cross-encoder
+    relevance ∈ [0, 1]; in the fallback path, semantic cosine relevance,
+    with BM25-only candidates tagged -1.0.
     """
     vectorstore = _get_vectorstore()
-    search_kwargs: dict = {"k": RETRIEVAL_K}
+    fetch_k = RETRIEVAL_FETCH_K if USE_RERANKER else RETRIEVAL_K
+    search_kwargs: dict = {"k": fetch_k}
     if philosopher != "All":
         search_kwargs["filter"] = {"philosopher": philosopher}
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Relevance scores must be between")
-        pairs = vectorstore.similarity_search_with_relevance_scores(input_text, **search_kwargs)
+        semantic_pairs = vectorstore.similarity_search_with_relevance_scores(
+            input_text, **search_kwargs
+        )
+    semantic_docs = [d for d, _ in semantic_pairs]
+    sem_score = {d.page_content: s for d, s in semantic_pairs}
 
+    bm25_docs: list[Document] = []
     if USE_HYBRID_SEARCH and philosopher == "All":
         try:
             bm25_docs = _get_bm25_retriever().invoke(input_text)
-            seen = {doc.page_content for doc, _ in pairs}
-            for doc in bm25_docs[:2]:
-                if doc.page_content not in seen:
-                    pairs.append((doc, -1.0))
-                    seen.add(doc.page_content)
         except Exception:
-            pass
+            bm25_docs = []
 
-    # Sort: semantic scores descending, BM25 appended at end
-    semantic = sorted([(d, s) for d, s in pairs if s >= 0], key=lambda x: x[1], reverse=True)
-    bm25_only = [(d, s) for d, s in pairs if s < 0]
-    pairs = (semantic + bm25_only)[: RETRIEVAL_K + 2]
+    # Stage 1 — fuse the two ranked lists into one candidate pool.
+    fused = _reciprocal_rank_fusion([semantic_docs, bm25_docs])
+    pool = [d for d, _ in fused][:fetch_k] or semantic_docs[:fetch_k]
 
-    return [d for d, _ in pairs], [s for _, s in pairs]
+    # Stage 2 — cross-encoder rerank.
+    if USE_RERANKER and pool:
+        try:
+            return _rerank(input_text, pool, RETRIEVAL_K)
+        except Exception:
+            pass  # fall through to hybrid-only ordering
+
+    # Fallback (reranker off or failed): RRF order, scored by cosine where known.
+    docs = pool[:RETRIEVAL_K]
+    scores = [
+        sem_score[d.page_content]
+        if sem_score.get(d.page_content, -1.0) >= 0
+        else -1.0
+        for d in docs
+    ]
+    return docs, scores
 
 
 # ---------------------------------------------------------------------------

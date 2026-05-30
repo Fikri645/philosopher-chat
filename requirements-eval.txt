@@ -1,0 +1,22 @@
+# Offline evaluation + notebook only — NOT needed to run the app.
+# The app reads the pre-computed eval_results.json.
+#
+# Install:
+#   pip install -r requirements.txt
+#   pip install --no-deps ragas        # --no-deps: skip scikit-network, a
+#                                       # knowledge-graph dep we don't use that
+#                                       # has no Python 3.14 wheel
+#   pip install -r requirements-eval.txt
+#   python evaluate.py
+#
+# Note: evaluate.py shims langchain_community.chat_models.vertexai (removed in
+# langchain-community 0.4.x) so RAGAS 0.4.x imports cleanly on the LangChain 1.x
+# stack — no downgrade of the app's dependencies required.
+
+instructor>=1.0.0
+datasets>=4.0.0
+langchain-openai>=0.2.0
+tiktoken>=0.7.0
+pysbd>=0.3.4
+matplotlib>=3.7.0
+jupyter>=1.0.0

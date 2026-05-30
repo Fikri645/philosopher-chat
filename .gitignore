@@ -7,3 +7,5 @@ data/
 # vectorstore/ is committed so Spaces starts instantly without re-ingesting
 *.log
 .pytest_cache/
+
+eval_run.log

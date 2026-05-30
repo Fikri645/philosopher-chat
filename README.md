@@ -24,9 +24,10 @@ cited directly from 12 primary texts (~5,700 chunks).
 
 | Feature | Detail |
 |---|---|
-| **Hybrid RAG** | BM25 + semantic cosine similarity ensemble |
+| **Two-stage retrieval** | Hybrid (dense + BM25) fused with RRF → cross-encoder reranking |
+| **RAGAS evaluation** | 4 metrics measured with/without reranking — reranking quantified, not assumed |
 | **Streaming** | Token-by-token via Google / Groq / OpenRouter |
-| **16 LLMs** | Gemma 4, Gemini, Llama 4, Qwen3, DeepSeek, Nemotron — all free tier |
+| **15 LLMs** | Gemma 4, Gemini, Llama 4, Qwen3, DeepSeek, Nemotron — all free tier |
 | **Think blocks** | Qwen3 / DeepSeek reasoning rendered as collapsible chains-of-thought |
 | **UMAP viz** | 2D projection of all 5,700+ embeddings coloured by philosopher |
 | **Model comparison** | Side-by-side latency + quality comparison across any two models |
@@ -56,12 +57,53 @@ All texts are public domain, sourced from [Project Gutenberg](https://www.gutenb
 
 | Layer | Tool |
 |---|---|
-| LLM routing | 16 models via Google AI Studio, Groq, OpenRouter (all free tier) |
+| LLM routing | 15 models via Google AI Studio, Groq, OpenRouter (all free tier) |
 | Embeddings | `google/embeddinggemma-300m` (HuggingFace, 768-dim) |
-| Retrieval | Hybrid BM25 + ChromaDB semantic search |
+| Retrieval | Hybrid (dense + BM25) → RRF fusion → cross-encoder rerank |
+| Reranker | `BAAI/bge-reranker-v2-m3` (multilingual cross-encoder) |
+| Evaluation | RAGAS metrics (faithfulness, relevancy, context precision/recall) |
 | RAG Framework | LangChain LCEL (no chains, direct composition) |
 | UI | Gradio 6 |
 | Deployment | HuggingFace Spaces |
+
+---
+
+## Retrieval Architecture
+
+```
+Question
+   │
+   ├─ Dense retrieval   (EmbeddingGemma-300M → ChromaDB cosine)  ─┐
+   ├─ Sparse retrieval  (BM25 / rank-bm25)                        ├─ RRF fusion → top-20 pool
+   │                                                             ─┘
+   ├─ Cross-encoder rerank  (BGE-reranker-v2-m3) → top-6
+   │
+   └─ LLM answer  (grounded + cited from top-6 chunks)
+```
+
+Two-stage retrieval is the modern production pattern: cheap recall first (hybrid), then
+a precise but expensive cross-encoder reranks the small candidate pool. The reranker
+scores each `(query, chunk)` pair jointly rather than comparing pre-computed vectors.
+
+## Evaluation
+
+The pipeline is measured, not assumed. [`evaluate.py`](evaluate.py) runs four
+[RAGAS](https://docs.ragas.io) metrics over a curated question set with reference
+answers, **with and without** the reranker, and writes `eval_results.json` (rendered
+live in the app's **📊 Evaluation** tab). See the
+[evaluation notebook](notebooks/rag_evaluation.ipynb) for the full analysis.
+
+```bash
+pip install -r requirements.txt -r requirements-eval.txt
+python evaluate.py        # ~12 min; writes eval_results.json
+```
+
+| Metric | Measures |
+|---|---|
+| **Faithfulness** | Answer claims supported by retrieved context (anti-hallucination) |
+| **Answer Relevancy** | Answer actually addresses the question |
+| **Context Precision** | Relevant chunks ranked near the top |
+| **Context Recall** | Reference answer covered by retrieved context |
 
 ---
 
