@@ -456,7 +456,7 @@ with gr.Blocks(title="Philosopher Chat") as demo:
 # 📚 Philosopher Chat
 **RAG chatbot grounded in Western philosophical primary texts**
 
-Query rewriting + hybrid retrieval + reranking + corrective abstention &nbsp;·&nbsp; Streaming
+Hybrid retrieval + cross-encoder reranking + corrective abstention &nbsp;·&nbsp; Streaming
 &nbsp;·&nbsp; Multi-provider routing &nbsp;·&nbsp; RAGAS-evaluated &nbsp;·&nbsp; 12 primary texts · ~5 700 chunks
         """
     )
@@ -519,7 +519,6 @@ Query rewriting + hybrid retrieval + reranking + corrective abstention &nbsp;·&
                     with gr.Group():
                         gr.Markdown("**ℹ️ Stack**", elem_classes="section-label")
                         gr.Markdown(
-                            "- Query: **Multi-query rewrite**\n"
                             "- Retrieval: **Hybrid (RRF) + Rerank**\n"
                             "- Reranker: **BGE-reranker-v2-m3**\n"
                             "- Guard: **Corrective RAG / abstention**\n"

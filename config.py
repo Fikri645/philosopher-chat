@@ -94,7 +94,10 @@ RRF_K             = 60      # RRF damping constant (standard default)
 #   alternative phrasings; each is retrieved and the results are fused with RRF
 #   before reranking — lifts recall on differently-worded questions.
 # ---------------------------------------------------------------------------
-USE_QUERY_REWRITE   = True
+# Disabled by default: the RAGAS ablation (see notebooks/rag_evaluation.ipynb)
+# showed multi-query rewriting slightly *hurt* recall on this small, focused
+# corpus. Kept implemented + measured; flip to True for larger/noisier corpora.
+USE_QUERY_REWRITE   = False
 QUERY_REWRITE_MODEL = "gemini-3.1-flash-lite"  # fast/cheap, via OpenAI-compat endpoint
 N_QUERY_VARIANTS    = 3      # total queries incl. the original
 
